@@ -1,0 +1,6 @@
+{
+  "name": "Corridor Desk — Solana Early-Entry & Risk Radar",
+  "description": "Clean 5-layer Solana early-entry radar, anti-top extension filter, Jupiter round-trip depth verifier, and persistent AMM stop-loss exit guard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
