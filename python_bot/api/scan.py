@@ -54,24 +54,46 @@ async def execute_scan_and_exit_guard(cfg: BotConfig) -> dict:
     alerts_sent = 0
     exit_alerts_sent = 0
     exits_checked = 0
+    alert_diagnostics: list[dict] = []
 
     async with httpx.AsyncClient(
         headers={"User-Agent": "CorridorDeskVercel/2.0"},
         follow_redirects=False,
     ) as client:
         # 1. Jalankan siklus pemindaian 8-feed (Fresh + Pre-ATH Sleeper Revival)
-        results, feed_notes = await run_scan_cycle(client, cfg, max_stage2=10)
+        results, feed_notes = await run_scan_cycle(client, cfg, max_stage2=12)
         ready = [r for r in results if r.verdict == "ENTRY_READY"]
         watch = [r for r in results if r.verdict == "WATCH_PULLBACK"]
 
         for audit in ready:
+            if not tg.enabled:
+                alert_diagnostics.append(
+                    {"symbol": audit.pair.symbol, "status": "skipped_telegram_disabled"}
+                )
+                continue
             if await store.should_send_alert(
                 audit.pair.mint, "ENTRY_READY", cfg.alert_cooldown_min
             ):
-                if tg.enabled:
-                    sent = await tg.send_message(client, format_entry_alert(audit))
-                    if sent:
-                        alerts_sent += 1
+                sent = await tg.send_message(client, format_entry_alert(audit))
+                if sent:
+                    alerts_sent += 1
+                    alert_diagnostics.append(
+                        {"symbol": audit.pair.symbol, "status": "sent"}
+                    )
+                else:
+                    # Batalkan cooldown agar bisa dicoba ulang di siklus berikutnya
+                    await store.release_alert_cooldown(audit.pair.mint, "ENTRY_READY")
+                    alert_diagnostics.append(
+                        {
+                            "symbol": audit.pair.symbol,
+                            "status": "telegram_failed",
+                            "reason": tg.last_error or "unknown",
+                        }
+                    )
+            else:
+                alert_diagnostics.append(
+                    {"symbol": audit.pair.symbol, "status": "skipped_cooldown"}
+                )
 
         # 2. Jalankan Exit Guard untuk seluruh posisi aktif dalam invocation yang sama
         positions = await store.list_positions()
@@ -87,20 +109,25 @@ async def execute_scan_and_exit_guard(cfg: BotConfig) -> dict:
                     if updated.signal in {"HARD_STOP_LOSS", "LP_PULL_EMERGENCY"}
                     else 15
                 )
-                if await store.should_send_alert(updated.mint, updated.signal, cooldown):
-                    if tg.enabled:
-                        sent = await tg.send_message(client, format_exit_alert(updated))
-                        if sent:
-                            exit_alerts_sent += 1
+                if tg.enabled and await store.should_send_alert(
+                    updated.mint, updated.signal, cooldown
+                ):
+                    sent = await tg.send_message(client, format_exit_alert(updated))
+                    if sent:
+                        exit_alerts_sent += 1
+                    else:
+                        await store.release_alert_cooldown(updated.mint, updated.signal)
 
     return {
         "ok": True,
         "storage_mode": getattr(store, "mode", "sqlite"),
         "telegram_enabled": tg.enabled,
+        "telegram_last_error": tg.last_error or None,
         "audited": len(results),
         "entry_ready": len(ready),
         "watch_pullback": len(watch),
         "entry_alerts_sent": alerts_sent,
+        "alert_diagnostics": alert_diagnostics,
         "exits_checked": exits_checked,
         "exit_alerts_sent": exit_alerts_sent,
         "duration_ms": int((time.time() - started) * 1000),

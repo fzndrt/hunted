@@ -88,6 +88,7 @@ class TelegramNotifier:
         self.token = cfg.telegram_bot_token
         self.chat_id = cfg.telegram_chat_id
         self.enabled = bool(self.token and self.chat_id)
+        self.last_error: str = ""
         self._last_update_id = 0
 
     async def send_message(
@@ -95,6 +96,7 @@ class TelegramNotifier:
     ) -> bool:
         target = chat_id or self.chat_id
         if not self.token or not target:
+            self.last_error = "TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID kosong"
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
@@ -104,10 +106,23 @@ class TelegramNotifier:
             "disable_web_page_preview": True,
         }
         try:
-            resp = await client.post(url, json=payload, timeout=10.0)
-            return resp.status_code == 200
+            resp = await client.post(url, json=payload, timeout=6.0)
+            if resp.status_code == 200:
+                self.last_error = ""
+                return True
+            desc = ""
+            try:
+                body = resp.json()
+                if isinstance(body, dict):
+                    desc = str(body.get("description") or "")[:160]
+            except Exception:
+                desc = ""
+            self.last_error = f"HTTP {resp.status_code}" + (f": {desc}" if desc else "")
+            logger.warning("Telegram sendMessage ditolak (%s)", self.last_error)
+            return False
         except Exception as exc:
-            logger.warning("Gagal kirim pesan Telegram: %s", exc)
+            self.last_error = f"Network error: {type(exc).__name__}"
+            logger.warning("Gagal kirim pesan Telegram: %s", type(exc).__name__)
             return False
 
     async def poll_commands(self, client: httpx.AsyncClient) -> list[tuple[str, str]]:

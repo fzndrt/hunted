@@ -54,6 +54,10 @@ class PositionStore(Protocol):
         self, mint: str, alert_type: str, cooldown_minutes: int
     ) -> bool: ...
 
+    async def release_alert_cooldown(
+        self, mint: str, alert_type: str
+    ) -> None: ...
+
 
 def validate_upstash_rest_url(raw_url: str) -> Optional[str]:
     """Pastikan URL REST Upstash/Vercel KV memakai HTTPS dan bukan alamat internal/loopback."""
@@ -92,22 +96,30 @@ class UpstashExitGuardStore:
         self.rest_url = validated
         self.rest_token = rest_token.strip()
 
-    async def _cmd(self, *args: Any) -> Any:
+    async def _cmd_with_status(self, *args: Any) -> tuple[bool, Any]:
         headers = {
             "Authorization": f"Bearer {self.rest_token}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as client:
-            resp = await client.post(
-                self.rest_url,
-                headers=headers,
-                json=[str(a) for a in args],
-            )
-            if resp.status_code != 200:
-                logger.warning("Upstash REST error HTTP %s", resp.status_code)
-                return None
-            data = resp.json()
-            return data.get("result")
+        try:
+            async with httpx.AsyncClient(timeout=4.5, follow_redirects=False) as client:
+                resp = await client.post(
+                    self.rest_url,
+                    headers=headers,
+                    json=[str(a) for a in args],
+                )
+                if resp.status_code != 200:
+                    logger.warning("Upstash REST error HTTP %s", resp.status_code)
+                    return False, None
+                data = resp.json()
+                return True, data.get("result")
+        except Exception as exc:
+            logger.warning("Upstash REST gagal dihubungi: %s", type(exc).__name__)
+            return False, None
+
+    async def _cmd(self, *args: Any) -> Any:
+        _, result = await self._cmd_with_status(*args)
+        return result
 
     @staticmethod
     def _dict_to_position(raw: dict[str, Any]) -> TrackedPosition:
@@ -244,9 +256,18 @@ class UpstashExitGuardStore:
     ) -> bool:
         ttl_sec = max(60, int(cooldown_minutes) * 60)
         key = f"{ALERT_PREFIX}{mint.strip()}:{alert_type.strip()}"
-        # Atomik SET NX EX: mengembalikan "OK" hanya jika key belum ada (bebas duplikat antar invocation Vercel)
-        res = await self._cmd("SET", key, str(int(time.time())), "EX", str(ttl_sec), "NX")
+        # Atomik SET NX EX: mengembalikan "OK" hanya jika key belum ada.
+        # Jika Upstash error/timeout (ok=False), fail-open agar alert trading tetap terkirim!
+        ok, res = await self._cmd_with_status(
+            "SET", key, str(int(time.time())), "EX", str(ttl_sec), "NX"
+        )
+        if not ok:
+            return True
         return res == "OK"
+
+    async def release_alert_cooldown(self, mint: str, alert_type: str) -> None:
+        key = f"{ALERT_PREFIX}{mint.strip()}:{alert_type.strip()}"
+        await self._cmd_with_status("DEL", key)
 
 
 class SqliteStoreWrapper(ExitGuardStore):

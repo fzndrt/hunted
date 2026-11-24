@@ -319,4 +319,41 @@ def test_vercel_env_auto_tmp_path_and_cron_secret_auth() -> None:
     assert validate_upstash_rest_url("https://169.254.169.254/latest") is None
 
 
+def test_alert_cooldown_release_and_upstash_fail_open() -> None:
+    from bot.storage import UpstashExitGuardStore
+
+    async def _run() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExitGuardStore(os.path.join(tmp, "cd.db"))
+            mint = "CYhq3NsNoYwQN2T4tZrscyzp4NCJft76sBPFf9Shpump"
+            assert await store.should_send_alert(mint, "ENTRY_READY", 30) is True
+            assert await store.should_send_alert(mint, "ENTRY_READY", 30) is False
+            # Jika Telegram gagal kirim -> release cooldown agar bisa dicoba lagi
+            await store.release_alert_cooldown(mint, "ENTRY_READY")
+            assert await store.should_send_alert(mint, "ENTRY_READY", 30) is True
+
+        # Simulasi Upstash error/timeout -> wajib fail-open (True), sedangkan NX hit (True, None) -> False
+        up = UpstashExitGuardStore("https://demo-redis.upstash.io", "token-xyz")
+
+        async def _fake_err(*_args):
+            return (False, None)
+
+        async def _fake_exists(*_args):
+            return (True, None)
+
+        async def _fake_ok(*_args):
+            return (True, "OK")
+
+        up._cmd_with_status = _fake_err  # type: ignore[method-assign]
+        assert await up.should_send_alert("mintA", "ENTRY_READY", 30) is True
+
+        up._cmd_with_status = _fake_exists  # type: ignore[method-assign]
+        assert await up.should_send_alert("mintA", "ENTRY_READY", 30) is False
+
+        up._cmd_with_status = _fake_ok  # type: ignore[method-assign]
+        assert await up.should_send_alert("mintA", "ENTRY_READY", 30) is True
+
+    asyncio.run(_run())
+
+
 

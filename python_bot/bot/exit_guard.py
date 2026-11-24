@@ -382,3 +382,12 @@ class ExitGuardStore:
                     (mint, alert_type, now),
                 )
                 return True
+
+    async def release_alert_cooldown(self, mint: str, alert_type: str) -> None:
+        """Batalkan kunci cooldown jika pengiriman Telegram gagal agar bisa dicoba lagi."""
+        async with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM sent_alerts WHERE mint = ? AND alert_type = ?",
+                    (mint, alert_type),
+                )
