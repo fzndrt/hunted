@@ -61,6 +61,7 @@ ORGANIC_FEED_SOURCES: frozenset[str] = frozenset(
     {
         "gecko_trending_5m",
         "gecko_trending_1h",
+        "gecko_trending_6h",
         "dex_pumpswap",
         "dex_raydium",
         "dex_community_takeovers",
@@ -159,16 +160,19 @@ class BotConfig:
     alert_cooldown_min: int = 30
 
     reaction_delay_sec: int = 22
-    min_score: int = 72
+    min_score: int = 76
     max_round_trip_loss_pct: float = 4.5
     max_depth_cliff_loss_pct: float = 13.5
     min_net_headroom_pct: float = 18.0
-    max_m5_change_pct: float = 28.0
-    max_h1_change_pct: float = 240.0
+    max_m5_change_pct: float = 22.0
+    max_fresh_h1_change_pct: float = 115.0
+    max_h1_change_pct: float = 210.0
+    min_pair_age_minutes: float = 20.0
     min_liquidity_usd: float = 12_000.0
     min_vol_m5_usd: float = 2_000.0
     min_vol_h1_usd: float = 15_000.0
     min_turnover_h1_ratio: float = 0.25
+    min_vol_m5_accel_ratio: float = 0.55
     include_midcap_corridor: bool = True
 
     enable_pumpportal_stream: bool = False
@@ -214,16 +218,19 @@ class BotConfig:
             exit_check_interval_sec=_env_int("EXIT_CHECK_INTERVAL_SEC", 20, 10, 300),
             alert_cooldown_min=_env_int("ALERT_COOLDOWN_MIN", 30, 5, 1440),
             reaction_delay_sec=_env_int("REACTION_DELAY_SEC", 22, 5, 90),
-            min_score=_env_int("MIN_SCORE", 72, 40, 95),
+            min_score=_env_int("MIN_SCORE", 76, 40, 95),
             max_round_trip_loss_pct=_env_float("MAX_ROUND_TRIP_LOSS_PCT", 4.5, 1.5, 12.0),
             max_depth_cliff_loss_pct=_env_float("MAX_DEPTH_CLIFF_LOSS_PCT", 13.5, 4.0, 25.0),
             min_net_headroom_pct=_env_float("MIN_NET_HEADROOM_PCT", 18.0, 8.0, 60.0),
-            max_m5_change_pct=_env_float("MAX_M5_CHANGE_PCT", 28.0, 8.0, 60.0),
-            max_h1_change_pct=_env_float("MAX_H1_CHANGE_PCT", 240.0, 40.0, 500.0),
+            max_m5_change_pct=_env_float("MAX_M5_CHANGE_PCT", 22.0, 8.0, 60.0),
+            max_fresh_h1_change_pct=_env_float("MAX_FRESH_H1_CHANGE_PCT", 115.0, 40.0, 250.0),
+            max_h1_change_pct=_env_float("MAX_H1_CHANGE_PCT", 210.0, 40.0, 500.0),
+            min_pair_age_minutes=_env_float("MIN_PAIR_AGE_MINUTES", 20.0, 0.0, 240.0),
             min_liquidity_usd=_env_float("MIN_LIQUIDITY_USD", 12_000.0, 5_000.0, 250_000.0),
             min_vol_m5_usd=_env_float("MIN_VOL_M5_USD", 2_000.0, 500.0, 100_000.0),
             min_vol_h1_usd=_env_float("MIN_VOL_H1_USD", 15_000.0, 2_000.0, 500_000.0),
             min_turnover_h1_ratio=_env_float("MIN_TURNOVER_H1_RATIO", 0.25, 0.05, 5.0),
+            min_vol_m5_accel_ratio=_env_float("MIN_VOL_M5_ACCEL_RATIO", 0.55, 0.1, 3.0),
             include_midcap_corridor=_env_bool("INCLUDE_MIDCAP_CORRIDOR", True),
             enable_pumpportal_stream=_env_bool("ENABLE_PUMPPORTAL_STREAM", False),
             pumpportal_min_sol_trade=_env_float("PUMPPORTAL_MIN_SOL_TRADE", 3.0, 0.5, 100.0),

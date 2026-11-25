@@ -44,13 +44,15 @@ def _make_pair(**overrides) -> PairSnapshot:
         sells_m5=15,
         buys_h1=45,
         sells_h1=25,
-        buys_h24=45,
-        sells_h24=25,
+        buys_h6=120,
+        sells_h6=80,
+        buys_h24=120,
+        sells_h24=80,
         price_change_m5=12.0,
         price_change_h1=40.0,
         price_change_h24=40.0,
-        pair_created_at_ms=now_ms - 10 * 60_000,
-        feed_sources=("gecko_new_pools", "dex_pumpswap"),
+        pair_created_at_ms=now_ms - 45 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
     )
     base.update(overrides)
     return PairSnapshot(**base)
@@ -114,9 +116,14 @@ def test_fresh_graduation_age_proportional_tx_threshold() -> None:
         vol_h1=16_000.0,
         pair_created_at_ms=now_ms - 4 * 60_000,
     )
-    res = evaluate_anti_top(fresh_pair, BotConfig(), now_ms=now_ms)
-    assert res.effective_min_tx_24h == 18
-    assert res.passed
+    # Secara default koin 4 menit ditahan survival_age >= 20m; jika min_pair_age_minutes=0, cek tx proporsional tetap 18
+    res_default = evaluate_anti_top(fresh_pair, BotConfig(), now_ms=now_ms)
+    assert not res_default.passed
+    assert any(c.id == "survival_age" and not c.passed for c in res_default.checks)
+
+    res_override = evaluate_anti_top(fresh_pair, BotConfig(min_pair_age_minutes=0.0), now_ms=now_ms)
+    assert res_override.effective_min_tx_24h == 18
+    assert res_override.passed
 
 
 def test_jupiter_1sol_quote_failure_is_strictly_fail_closed() -> None:
@@ -457,5 +464,172 @@ def test_whale_absorption_rising_price_passes_anti_top() -> None:
     assert res.corridor_id == "CORRIDOR_C_EXPANSION"
 
 
+def test_fresh_overextended_coin_and_dying_volume_are_blocked() -> None:
+    """Koin baru (35 menit) yg sudah naik +165% 1h atau volumenya sekarat (accel < 0.55x) wajib diblokir."""
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+
+    # 1. Koin muda 35m sudah +165% 1h -> melampaui batas fresh +115% -> WAIT_DIP (jangan kejar pucuk!)
+    overextended_fresh = _make_pair(
+        market_cap=88_000.0,
+        liquidity_usd=22_000.0,
+        vol_m5=8_000.0,
+        vol_h1=60_000.0,
+        price_change_m5=6.0,
+        price_change_h1=165.0,
+        pair_created_at_ms=now_ms - 35 * 60_000,
+    )
+    res_peak = evaluate_anti_top(overextended_fresh, cfg, now_ms=now_ms)
+    assert not res_peak.passed
+    assert any(c.id == "parabolic_cap" and not c.passed for c in res_peak.checks)
+
+    # 2. Koin usia 50m yg Vol1h $120K ($10K/5m) tapi Vol5m anjlok ke $2,500 (accel 0.25x) -> HARD VETO!
+    dying_vol = _make_pair(
+        market_cap=68_000.0,
+        liquidity_usd=20_000.0,
+        vol_m5=2_500.0,
+        vol_h1=120_000.0,
+        price_change_m5=2.0,
+        price_change_h1=45.0,
+        pair_created_at_ms=now_ms - 50 * 60_000,
+    )
+    res_dying = evaluate_anti_top(dying_vol, cfg, now_ms=now_ms)
+    assert not res_dying.passed
+    assert not res_dying.wait_dip_only
+    assert res_dying.vol_m5_accel_ratio < 0.55
+    assert any(c.id == "orderflow_quality" and not c.passed and "sekarat" in c.detail for c in res_dying.checks)
 
 
+def test_ohlcv_blowoff_top_and_volume_exhaustion_are_hard_vetoed() -> None:
+    """Layer 2B OHLCV 5m: jarum pucuk blow-off (wick >= 48% + DD >= 10%) dan bensin habis wajib HARD VETO."""
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    pair = _make_pair(
+        market_cap=110_000.0,
+        liquidity_usd=26_000.0,
+        vol_m5=9_000.0,
+        vol_h1=95_000.0,
+        price_change_m5=5.0,
+        price_change_h1=92.0,
+        pair_created_at_ms=now_ms - 55 * 60_000,
+    )
+    at = evaluate_anti_top(pair, cfg, now_ms=now_ms)
+    assert at.passed
+
+    # Candle 5m [ts, O, H, L, C, V]: lonjakan besar lalu wick atas panjang (High 0.0020, Close 0.00145) & vol anjlok
+    blowoff_candles = [
+        [1, 0.0008, 0.0010, 0.00078, 0.00098, 45_000],
+        [2, 0.00098, 0.00135, 0.00095, 0.00130, 80_000],
+        [3, 0.00130, 0.00190, 0.00128, 0.00178, 120_000],  # peak candle vol
+        [4, 0.00178, 0.00205, 0.00150, 0.00162, 28_000],   # wick atas 51% + DD 21% + vol collapse!
+        [5, 0.00162, 0.00172, 0.00152, 0.00158, 18_000],
+    ]
+    st = evaluate_candle_structure(pair, at, blowoff_candles, [], cfg)
+    assert not st.passed
+    assert not st.wait_dip_only  # HARD VETO!
+    assert st.regime == "EXHAUSTION_TOP"
+
+
+def test_daily_consolidation_distinguishes_bullish_accumulation_vs_bearish_distribution() -> None:
+    """Layer 2B Daily Classifier: wajib meloloskan konsolidasi AKUMULASI (naik) & menolak DISTRIBUSI (turun)."""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+
+    # --- KASUS A: KOIN HARIAN (3 HARI) KONSOLIDASI AKUMULASI (AKAN NAIK) ---
+    # Box ketat ~22%, Higher Lows (low naik dari 0.00100 -> 0.00108), volume hijau dominan, wick atas kecil,
+    # candle terakhir breakout di posisi ~104% box dengan ekspansi volume 2.8x!
+    bullish_1h = [
+        [1, 0.00105, 0.00116, 0.00100, 0.00104, 4_200],
+        [2, 0.00104, 0.00114, 0.00101, 0.00110, 5_100],
+        [3, 0.00110, 0.00118, 0.00104, 0.00107, 3_600],
+        [4, 0.00107, 0.00115, 0.00103, 0.00112, 4_800],
+        [5, 0.00112, 0.00120, 0.00108, 0.00116, 5_500],  # paruh ke-2: Higher Low (0.00108 > 0.00100)
+        [6, 0.00116, 0.00121, 0.00110, 0.00114, 3_200],  # koreksi ringan volume kecil
+        [7, 0.00114, 0.00121, 0.00111, 0.00119, 6_400],  # akumulasi hijau
+        [8, 0.00119, 0.00122, 0.00114, 0.00120, 6_800],
+        [9, 0.00120, 0.00125, 0.00118, 0.00123, 16_500],  # BREAKOUT bersih di atas box (pos ~104%, vol 3.4x)
+    ]
+    bull_pair = _make_pair(
+        market_cap=115_000.0,
+        liquidity_usd=28_000.0,
+        vol_m5=4_500.0,
+        vol_h1=32_000.0,
+        vol_h6=62_000.0,
+        vol_h24=105_000.0,
+        buys_m5=28,
+        sells_m5=15,
+        buys_h1=130,
+        sells_h1=82,
+        buys_h6=320,
+        sells_h6=220,  # 59.3% buy 6h -> akumulasi nyata!
+        buys_h24=720,
+        sells_h24=580,
+        price_change_m5=5.5,
+        price_change_h1=14.0,
+        price_change_h6=18.0,
+        price_change_h24=24.0,
+        pair_created_at_ms=now_ms - 3 * 24 * 60 * 60_000,
+        feed_sources=("gecko_trending_6h", "dex_pumpswap"),
+    )
+    sec_b = evaluate_security(bull_pair, _clean_rugcheck())
+    at_b = evaluate_anti_top(bull_pair, cfg, now_ms=now_ms)
+    st_b = evaluate_candle_structure(bull_pair, at_b, [], bullish_1h, cfg)
+    ex_b = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.020"},
+        {"outAmount": "945000000", "priceImpactPct": "0.022"},
+        cfg,
+    )
+    audit_b = score_and_finalize(bull_pair, sec_b, at_b, ex_b, cfg, structure=st_b)
+    assert at_b.passed, f"Bullish daily anti_top failed: {[c.detail for c in at_b.checks if not c.passed]}"
+    assert st_b.passed, f"Bullish daily structure failed: {[c.detail for c in st_b.checks if not c.passed]}"
+    assert st_b.regime == "BULLISH_CONSOLIDATION_BREAKOUT"
+    assert audit_b.verdict == "ENTRY_READY"
+    assert audit_b.total_score >= cfg.min_score
+
+    # --- KASUS B: KOIN HARIAN (3 HARI) KONSOLIDASI DISTRIBUSI (AKAN TURUN) ---
+    # Lower Highs, wick atas panjang (> 45%), volume merah besar, harga duduk di bawah box (pos ~20%) -> HARD VETO!
+    bearish_1h = [
+        [1, 0.00125, 0.00145, 0.00120, 0.00126, 9_500],   # wick atas panjang
+        [2, 0.00126, 0.00142, 0.00118, 0.00121, 12_000],  # merah volume besar
+        [3, 0.00121, 0.00136, 0.00117, 0.00119, 11_000],  # lower high + merah
+        [4, 0.00119, 0.00130, 0.00115, 0.00118, 8_500],
+        [5, 0.00118, 0.00126, 0.00113, 0.00114, 13_000],  # lower high + merah berat
+        [6, 0.00114, 0.00125, 0.00112, 0.00113, 14_000],  # wick atas panjang
+        [7, 0.00113, 0.00123, 0.00111, 0.00112, 12_500],  # wick atas panjang + merah
+        [8, 0.00112, 0.00121, 0.00110, 0.00111, 13_500],  # distribusi terus
+        [9, 0.00111, 0.00122, 0.00110, 0.00114, 7_500],   # dead-cat bounce kecil di bawah box (wick 67%!)
+    ]
+    bear_pair = _make_pair(
+        market_cap=110_000.0,
+        liquidity_usd=27_000.0,
+        vol_m5=3_500.0,
+        vol_h1=28_000.0,
+        vol_h6=85_000.0,
+        vol_h24=180_000.0,
+        buys_m5=20,
+        sells_m5=15,
+        buys_h1=90,
+        sells_h1=88,
+        buys_h6=210,
+        sells_h6=270,  # 43.8% buy 6h -> distribusi turun!
+        buys_h24=600,
+        sells_h24=650,
+        price_change_m5=2.5,
+        price_change_h1=1.0,
+        price_change_h6=-8.0,
+        price_change_h24=-14.0,
+        pair_created_at_ms=now_ms - 3 * 24 * 60 * 60_000,
+    )
+    at_bear = evaluate_anti_top(bear_pair, cfg, now_ms=now_ms)
+    st_bear = evaluate_candle_structure(bear_pair, at_bear, [], bearish_1h, cfg)
+    assert not st_bear.passed
+    assert not st_bear.wait_dip_only  # Wajib HARD VETO (bukan WAIT_DIP!)
+    assert st_bear.regime == "BEARISH_DISTRIBUTION"
+    assert not at_bear.passed  # Juga kena veto 6h sell bleed di Layer 2A!

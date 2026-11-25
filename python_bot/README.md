@@ -4,7 +4,7 @@ Arsitektur modular pengganti monolit `api/fomo.py` (17.011 baris) untuk trading 
 
 Mendukung penuh alur **GitHub → Vercel Serverless → Telegram Bot** (termasuk persistensi **Upstash Redis / Vercel KV** agar anti lupa posisi/alert) sekaligus tetap bisa dijalankan 24/7 di VPS melalui `main.py`.
 
-## Struktur Repository (24 File)
+## Struktur Repository (25 File)
 
 ```text
 .
@@ -17,32 +17,33 @@ Mendukung penuh alur **GitHub → Vercel Serverless → Telegram Bot** (termasuk
 │       └── radar-cron.yml              # Scheduler GRATIS tiap 5 menit via GitHub Actions -> Vercel /api/scan
 ├── api/
 │   ├── index.py                        # GET / -> Status kesiapan Environment & storage Vercel
-│   ├── scan.py                         # GET/POST /api/scan -> Radar 8-feed + Alert Telegram + Exit Guard
+│   ├── scan.py                         # GET/POST /api/scan -> Radar 7-feed + OHLCV + Alert Telegram + Exit Guard
 │   └── webhook.py                      # POST /api/webhook -> Perintah Telegram instan (/scan, /inspect, dll)
 ├── main.py                             # Entrypoint worker 24/7 opsional jika kelak pindah ke VPS
 ├── bot/
 │   ├── __init__.py
 │   ├── config.py                       # Allowlist Hard-Quote Mint, 3 Koridor, & deteksi env Vercel
-│   ├── models.py                       # Dataclass terstruktur seluruh 5 layer
-│   ├── security.py                     # Layer 1: Veto keamanan biner (RugCheck, Token-2022, Pareto, LP)
-│   ├── anti_top.py                     # Layer 2: Koridor, Red Zone, Delay 22s, Pre-ATH & Sleeper Revival
+│   ├── models.py                       # Dataclass terstruktur seluruh 5 layer + StructureResult
+│   ├── security.py                     # Layer 1: Veto keamanan biner (RugCheck, Token-2022, Dynamic AMM Pareto, LP)
+│   ├── anti_top.py                     # Layer 2A: Koridor, Survival Age >=20m, Vol Accel, 6h Buy & Adaptive 1h Cap
+│   ├── structure.py                    # Layer 2B: OHLCV 5m/1h (Anti-Blow-Off Top & Daily Consolidation Akumulasi vs Distribusi)
 │   ├── execution.py                    # Layer 3: Jupiter 0.1 SOL + 1.0 SOL fail-closed round-trip
 │   ├── scoring.py                      # Layer 4: Additive Score 0–100 (5 pilar) & Trade Plan R:R
 │   ├── exit_guard.py                   # Layer 5: Evaluasi Hard SL, Breakeven, Trailing & AMM LP √(MC/MC0)
 │   ├── storage.py                      # Persistensi otomatis: Upstash Redis Cloud (Vercel) / SQLite WAL (VPS)
-│   ├── feeds.py                        # 8-Feed discovery (Fresh + Sleeper Revival 1h & Top Boosts)
-│   ├── pipeline.py                     # Orkestrator audit paralel Layer 1–4 (teroptimasi latency Vercel)
+│   ├── feeds.py                        # 7-Feed discovery organik anti-429 (Gecko 5m/1h/6h + PumpSwap/Raydium/CTO)
+│   ├── pipeline.py                     # Orkestrator audit paralel Layer 1–4 + slot khusus Daily Consolidation
 │   ├── pumpportal_stream.py            # WebSocket PumpPortal (khusus VPS)
 │   └── telegram_notifier.py            # Formatter alert HTML aman & command handler bersama
 └── tests/
-    └── test_engine.py                  # Unit test aturan anti-rugi, Sleeper Revival, AMM & Vercel auth
+    └── test_engine.py                  # Unit test aturan anti-rugi, OHLCV Anti-Pucuk, Daily Consolidation & Vercel auth
 ```
 
 ---
 
 ## Panduan Deploy Lengkap: GitHub → Vercel → Telegram Bot
 
-### Langkah 1: Push 24 File ke GitHub
+### Langkah 1: Push 25 File ke GitHub
 Upload seluruh isi repo ini ke root repository GitHub Anda (`main` branch). Pastikan file `.env` **tidak pernah** ikut ter-upload.
 
 ### Langkah 2: Import ke Vercel & Isi Environment Variables
@@ -56,7 +57,7 @@ Di dashboard **Vercel → Project → Settings → Environment Variables**, tamb
 | `TELEGRAM_WEBHOOK_SECRET` | **Disarankan** | Password acak untuk memverifikasi request asli dari server Telegram |
 | `UPSTASH_REDIS_REST_URL` | **Sangat Disarankan** | URL REST dari Upstash Redis gratis (atau Vercel Marketplace → Upstash Redis) |
 | `UPSTASH_REDIS_REST_TOKEN` | **Sangat Disarankan** | Token REST dari Upstash Redis agar cooldown alert & Exit Guard tidak hilang saat cold start |
-| `MIN_SCORE` | Opsional | Default `72` (ambang skor minimal 0–100 untuk kirim alert) |
+| `MIN_SCORE` | Opsional | Default `76` (ambang skor minimal 0–100 untuk kirim alert) |
 
 Setelah klik **Deploy**, buka `https://<nama-project-anda>.vercel.app/` di browser. Pastikan keluar JSON `"ready": true`.
 

@@ -1,8 +1,9 @@
-"""Orkestrator Pipeline 4-Layer (Batch Scan & Single-Mint Pre-Trade Audit)."""
+"""Orkestrator Pipeline 4-Layer + Layer 2B OHLCV Structure (Batch Scan & Single-Mint Audit)."""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Optional
 import httpx
 
@@ -10,9 +11,17 @@ from .anti_top import evaluate_anti_top
 from .config import BotConfig
 from .execution import verify_jupiter_execution
 from .feeds import discover_solana_candidates, fetch_pair_for_mint
-from .models import AuditResult, ExecutionResult, GateCheck, PairSnapshot, SecurityResult
+from .models import (
+    AuditResult,
+    ExecutionResult,
+    GateCheck,
+    PairSnapshot,
+    SecurityResult,
+    StructureResult,
+)
 from .scoring import score_and_finalize
 from .security import evaluate_security, fetch_rugcheck_report
+from .structure import fetch_and_evaluate_structure
 
 
 def _skipped_execution_result(
@@ -29,7 +38,7 @@ def _skipped_execution_result(
                 passed=False,
                 severity="VETO",
                 actual="SKIPPED",
-                threshold="Wajib lolos Layer 1 Security terlebih dahulu",
+                threshold="Wajib lolos Layer 1, 2 & 2B OHLCV terlebih dahulu",
                 detail=reason,
             ),
         ),
@@ -41,8 +50,6 @@ def _skipped_execution_result(
 
 
 def _skipped_security_result(pair: PairSnapshot, reason: str) -> SecurityResult:
-    from .models import SecurityResult
-
     return SecurityResult(
         passed=False,
         checks=(
@@ -82,17 +89,31 @@ async def audit_pair(
         first_veto = next((c.detail for c in anti_top.checks if not c.passed), "Veto Layer 2.")
         security = _skipped_security_result(pair, first_veto)
         execution = _skipped_execution_result("Dilewati karena ditolak pada Layer 2 Anti-Top.")
-        return score_and_finalize(pair, security, anti_top, execution, cfg)
+        return score_and_finalize(pair, security, anti_top, execution, cfg, structure=None)
 
     rugcheck = await fetch_rugcheck_report(client, pair.mint)
     security = evaluate_security(pair, rugcheck)
 
+    # Layer 2B: Verifikasi Struktur Candle OHLCV asli (Anti-Pucuk Blow-Off & Klasifikasi Konsolidasi Harian)
+    structure: Optional[StructureResult] = None
     if (security.passed and anti_top.passed) or always_run_jupiter:
+        structure = await fetch_and_evaluate_structure(client, pair, anti_top, cfg)
+
+    if (
+        security.passed
+        and anti_top.passed
+        and (structure is None or structure.passed)
+    ) or always_run_jupiter:
         execution = await verify_jupiter_execution(client, pair.mint, cfg)
     elif not security.passed:
         execution = _skipped_execution_result(
             "Dilewati untuk hemat kuota API Jupiter karena token ditolak di Layer 1 Security.",
             status="SKIPPED_SECURITY_VETO",
+        )
+    elif structure is not None and not structure.passed:
+        execution = _skipped_execution_result(
+            f"Dilewati karena struktur OHLCV ditolak/menunggu ({structure.regime}): {structure.summary}",
+            status="SKIPPED_WAIT_DIP" if structure.wait_dip_only else "SKIPPED_STRUCTURE_VETO",
         )
     else:
         execution = _skipped_execution_result(
@@ -100,7 +121,7 @@ async def audit_pair(
             status="SKIPPED_WAIT_DIP",
         )
 
-    return score_and_finalize(pair, security, anti_top, execution, cfg)
+    return score_and_finalize(pair, security, anti_top, execution, cfg, structure=structure)
 
 
 async def inspect_mint(
@@ -117,25 +138,49 @@ async def run_scan_cycle(
 ) -> tuple[list[AuditResult], list[str]]:
     from .config import ORGANIC_FEED_SOURCES
 
-    candidates, feed_notes = await discover_solana_candidates(client, max_candidates=60)
+    candidates, feed_notes = await discover_solana_candidates(client, max_candidates=65)
+    now_ms = int(time.time() * 1000)
 
-    # Prioritaskan token organik di koridor $25K–$450K yang benar-benar punya kecepatan volume 5m hidup
-    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, float, float]:
+    def _age_min(p: PairSnapshot) -> float:
+        if p.pair_created_at_ms <= 0:
+            return 999.0
+        return max(0.1, (now_ms - p.pair_created_at_ms) / 60_000.0)
+
+    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, int, float, float]:
         organic_hits = sum(1 for src in p.feed_sources if src in ORGANIC_FEED_SOURCES)
         in_corridor = 1 if (22_000.0 <= p.market_cap <= 450_000.0 and p.liquidity_usd >= 10_000.0) else 0
+        survived_sniper = 1 if _age_min(p) >= cfg.min_pair_age_minutes else 0
         has_live_vol = 1 if p.vol_m5 >= 1_200.0 else 0
-        return (in_corridor, has_live_vol, organic_hits * 25_000.0 + p.vol_m5, p.vol_h1)
+        return (in_corridor, survived_sniper, has_live_vol, organic_hits * 25_000.0 + p.vol_m5, p.vol_h1)
 
     eligible = [
         p
         for p in candidates
-        if 20_000.0 <= p.market_cap <= 600_000.0 and p.liquidity_usd >= 8_000.0
+        if 20_000.0 <= p.market_cap <= 550_000.0 and p.liquidity_usd >= 10_000.0
     ]
-    eligible.sort(key=_candidate_rank, reverse=True)
+
+    # Bagi slot Stage-2 antara koin Intraday (20m–20j) dan koin Konsolidasi Harian (>= 20j)
+    # agar koin harian yang sedang konsolidasi naik TIDAK kalah slot dari koin baru!
+    daily_pool = [p for p in eligible if _age_min(p) >= 20.0 * 60.0]
+    intraday_pool = [p for p in eligible if _age_min(p) < 20.0 * 60.0]
+
+    daily_pool.sort(key=_candidate_rank, reverse=True)
+    intraday_pool.sort(key=_candidate_rank, reverse=True)
 
     effective_limit = min(max_stage2, 12) if cfg.is_vercel else max_stage2
-    to_audit = eligible[:effective_limit]
-    sem = asyncio.Semaphore(5 if cfg.is_vercel else 4)
+    daily_slots = min(len(daily_pool), 4)
+    intraday_slots = max(0, effective_limit - daily_slots)
+
+    to_audit: list[PairSnapshot] = intraday_pool[:intraday_slots] + daily_pool[:daily_slots]
+    if len(to_audit) < effective_limit:
+        seen = {p.mint for p in to_audit}
+        for p in intraday_pool[intraday_slots:] + daily_pool[daily_slots:]:
+            if p.mint not in seen and len(to_audit) < effective_limit:
+                to_audit.append(p)
+                seen.add(p.mint)
+
+    # Gunakan concurrency 3 agar GeckoTerminal OHLCV pada finalis tidak terkena 429 burst
+    sem = asyncio.Semaphore(3)
 
     async def bounded_audit(pair: PairSnapshot) -> AuditResult:
         async with sem:
@@ -145,4 +190,5 @@ async def run_scan_cycle(
     rank = {"ENTRY_READY": 0, "WATCH_PULLBACK": 1, "REJECTED": 2}
     results.sort(key=lambda r: (rank[r.verdict], -r.total_score))
     return results, feed_notes
+
 

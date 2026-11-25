@@ -49,6 +49,7 @@ def parse_dexscreener_pair(
 
     m5_tx = txns.get("m5") or {}
     h1_tx = txns.get("h1") or {}
+    h6_tx = txns.get("h6") or {}
     h24_tx = txns.get("h24") or {}
 
     mc = _safe_float(raw.get("marketCap")) or _safe_float(raw.get("fdv"))
@@ -80,6 +81,8 @@ def parse_dexscreener_pair(
         url=str(raw.get("url") or f"https://dexscreener.com/solana/{mint}"),
         vol_h6=_safe_float(vol.get("h6")),
         price_change_h6=_safe_float(pc.get("h6")),
+        buys_h6=_safe_int(h6_tx.get("buys")),
+        sells_h6=_safe_int(h6_tx.get("sells")),
     )
 
 
@@ -178,26 +181,31 @@ async def fetch_pairs_batch(
 
 async def _fetch_gecko_staggered(
     client: httpx.AsyncClient,
-) -> tuple[Any, Any]:
-    """Tarik GeckoTerminal 5m & 1h berurutan (jeda 0.75s) agar tidak terkena HTTP 429 burst."""
+) -> tuple[Any, Any, Any]:
+    """Tarik GeckoTerminal 5m, 1h & 6h berurutan (jeda 0.7s) agar anti-HTTP 429 & menangkap konsolidasi harian."""
     gt_5m = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m",
     )
-    await asyncio.sleep(0.75)
+    await asyncio.sleep(0.7)
     gt_1h = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h",
     )
-    return gt_5m, gt_1h
+    await asyncio.sleep(0.7)
+    gt_6h = await _get_json(
+        client,
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h",
+    )
+    return gt_5m, gt_1h, gt_6h
 
 
 async def discover_solana_candidates(
-    client: httpx.AsyncClient, max_candidates: int = 60
+    client: httpx.AsyncClient, max_candidates: int = 65
 ) -> tuple[list[PairSnapshot], list[str]]:
     """
-    Kumpulkan kandidat organik dari 6 sumber utama anti-429 & anti-paid-boost bias:
-      - Organik: GeckoTerminal 5m & 1h (staggered), DexScreener PumpSwap, Raydium, Community Takeovers
+    Kumpulkan kandidat organik dari 7 sumber utama anti-429 & anti-paid-boost bias:
+      - Organik Intraday & Harian: GeckoTerminal 5m, 1h, 6h (staggered), DexScreener PumpSwap, Raydium, CTO
       - Sekunder: DexScreener Top Boosts (tidak pernah mendominasi urutan di atas feed organik)
     """
     dex_urls = {
@@ -211,7 +219,7 @@ async def discover_solana_candidates(
     gecko_task = _fetch_gecko_staggered(client)
     dex_tasks = [_get_json(client, dex_urls[k]) for k in dex_keys]
     gathered = await asyncio.gather(gecko_task, *dex_tasks)
-    gt_5m, gt_1h = gathered[0]
+    gt_5m, gt_1h, gt_6h = gathered[0]
     dex_responses = gathered[1:]
 
     sources_map: dict[str, set[str]] = {}
@@ -222,7 +230,11 @@ async def discover_solana_candidates(
         if is_valid_solana_mint(m) and m not in VERIFIED_HARD_QUOTE_MINTS:
             sources_map.setdefault(m, set()).add(source)
 
-    for key, payload in (("gecko_trending_5m", gt_5m), ("gecko_trending_1h", gt_1h)):
+    for key, payload in (
+        ("gecko_trending_5m", gt_5m),
+        ("gecko_trending_1h", gt_1h),
+        ("gecko_trending_6h", gt_6h),
+    ):
         before = sum(1 for s in sources_map.values() if key in s)
         if isinstance(payload, dict):
             for item in payload.get("data") or []:
@@ -246,11 +258,19 @@ async def discover_solana_candidates(
         after = sum(1 for s in sources_map.values() if key in s)
         notes.append(f"{key}:{after - before}")
 
-    # Prioritaskan token dari feed ORGANIK (Gecko 5m/1h, PumpSwap, Raydium, CTO) — bukan paid boosts!
+    # Prioritaskan token dari feed ORGANIK (Gecko 5m/1h/6h, PumpSwap, Raydium, CTO) — bukan paid boosts!
     def _mint_priority(m: str) -> tuple[int, int]:
         srcs = sources_map[m]
         organic_cnt = sum(1 for s in srcs if s in ORGANIC_FEED_SOURCES)
-        gecko_bonus = 1 if ("gecko_trending_5m" in srcs or "gecko_trending_1h" in srcs) else 0
+        gecko_bonus = (
+            1
+            if (
+                "gecko_trending_5m" in srcs
+                or "gecko_trending_1h" in srcs
+                or "gecko_trending_6h" in srcs
+            )
+            else 0
+        )
         return (organic_cnt + gecko_bonus, len(srcs))
 
     ranked_mints = sorted(sources_map.keys(), key=_mint_priority, reverse=True)[

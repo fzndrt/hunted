@@ -59,12 +59,17 @@ def evaluate_anti_top(
 
     tx_5m = pair.buys_m5 + pair.sells_m5
     tx_1h = pair.buys_h1 + pair.sells_h1
+    tx_6h = pair.buys_h6 + pair.sells_h6
     tx_24h = pair.buys_h24 + pair.sells_h24
     buy_ratio_5m = (pair.buys_m5 / tx_5m * 100.0) if tx_5m > 0 else 50.0
     buy_ratio_1h = (pair.buys_h1 / tx_1h * 100.0) if tx_1h > 0 else 50.0
+    buy_ratio_6h = (pair.buys_h6 / tx_6h * 100.0) if tx_6h > 0 else buy_ratio_1h
     avg_ticket_5m = (pair.vol_m5 / tx_5m) if tx_5m > 0 else 0.0
     avg_ticket_1h = (pair.vol_h1 / tx_1h) if tx_1h > 0 else 0.0
     turnover_h1_ratio = (pair.vol_h1 / spot_mc) if spot_mc > 0 else 0.0
+    avg_5m_from_1h = (pair.vol_h1 / 12.0) if pair.vol_h1 > 0 else 0.0
+    vol_m5_accel_ratio = (pair.vol_m5 / avg_5m_from_1h) if avg_5m_from_1h > 0 else 1.0
+    is_daily_coin = age_minutes >= 20.0 * 60.0
 
     # 1. Proyeksi Delay Eksekusi (default 22 detik) berbasis kecepatan momentum 5m
     positive_m5 = max(0.0, p_m5)
@@ -128,28 +133,52 @@ def evaluate_anti_top(
         )
     )
 
-    # 3. Parabolic Candle 5m/1h Cap + Anti-Dead-Bounce Floor (Blokir koin sekarat yg minus tajam!)
+    # 2b. Survival Age Guard (Blokir koin ultra-baru < 20 menit yg rawan dump sniper langsung mati!)
+    age_ok = age_minutes >= cfg.min_pair_age_minutes
+    checks.append(
+        GateCheck(
+            id="survival_age",
+            layer="ANTI_TOP",
+            label="Usia Bertahan Pasca-Migrasi (Anti-Sniper Dump)",
+            passed=age_ok,
+            severity="PASS" if age_ok else "WAIT_DIP",
+            actual=f"{age_minutes:.0f} menit",
+            threshold=f">= {cfg.min_pair_age_minutes:.0f} menit",
+            detail=(
+                f"Sudah bertahan {age_minutes:.0f} menit pasca-migrasi (melewati gelombang dump sniper awal)."
+                if age_ok
+                else f"Terlalu baru ({age_minutes:.0f}m < {cfg.min_pair_age_minutes:.0f}m) — tunggu lolos dump sniper pertama & membentuk base."
+            ),
+        )
+    )
+
+    # 3. Parabolic Candle 5m/1h Cap (Adaptif Usia!) + Anti-Dead-Bounce Floor
+    # Koin muda (< 2 jam atau < 1.200 tx) dilarang dikejar jika 1h sudah > +115% (rawan beli puncak!)
+    is_proven_runner = age_minutes >= 120.0 and tx_24h >= 1_200
+    effective_max_h1 = cfg.max_h1_change_pct if is_proven_runner else cfg.max_fresh_h1_change_pct
+    h1_floor = -12.0 if (is_daily_coin and p_m5 >= 1.5) else -10.0
+
     m5_falling = p_m5 < -3.5
-    h1_falling = p_h1 < -10.0
+    h1_falling = p_h1 < h1_floor
     m5_too_hot = p_m5 > cfg.max_m5_change_pct
-    h1_too_hot = p_h1 > cfg.max_h1_change_pct
+    h1_too_hot = p_h1 > effective_max_h1
     parabolic_ok = (not m5_falling) and (not h1_falling) and (not m5_too_hot) and (not h1_too_hot)
     checks.append(
         GateCheck(
             id="parabolic_cap",
             layer="ANTI_TOP",
-            label="Batas Candle Parabolik & Anti-Koin Sekarat",
+            label="Batas Pucuk Parabolik (Adaptif Usia) & Anti-Koin Jatuh",
             passed=parabolic_ok,
             severity="PASS" if parabolic_ok else ("VETO" if (m5_falling or h1_falling) else "WAIT_DIP"),
             actual=f"5m {p_m5:+.1f}% · 1h {p_h1:+.1f}%",
-            threshold=f"5m [-3.5%, +{cfg.max_m5_change_pct:.0f}%] · 1h [-10%, +{cfg.max_h1_change_pct:.0f}%]",
+            threshold=f"5m [-3.5%, +{cfg.max_m5_change_pct:.0f}%] · 1h [{h1_floor:.0f}%, +{effective_max_h1:.0f}%]",
             detail=(
-                "Kecepatan harga sehat (aktif naik/konsolidasi, bukan pucuk vertikal atau koin jatuh)."
+                "Kecepatan harga sehat (belum pucuk vertikal dan tidak sedang jatuh)."
                 if parabolic_ok
                 else (
-                    f"DITOLAK: Tren sedang jatuh/sekarat (5m {p_m5:+.1f}%, 1h {p_h1:+.1f}%) — jangan beli koin mati."
+                    f"DITOLAK: Tren sedang jatuh/sekarat (5m {p_m5:+.1f}%, 1h {p_h1:+.1f}%) — jangan beli pisau jatuh."
                     if (m5_falling or h1_falling)
-                    else "Candle sudah terlalu vertikal — tunggu koreksi sehat sebelum entry."
+                    else f"Sudah terlalu tinggi di puncak (+{p_h1:.0f}% 1h / +{p_m5:.0f}% 5m) — tunggu pullback sehat membentuk Higher-Low."
                 )
             ),
         )
@@ -174,36 +203,40 @@ def evaluate_anti_top(
         )
     )
 
-    # 5. Pre-hitung Sleeper Revival Wake-up agar ambang vol 5m proporsional
+    # 5. Pre-hitung Sleeper Revival / Daily Awakening agar ambang vol proporsional untuk koin harian
     avg_5m_vol_24h = (pair.vol_h24 / 288.0) if pair.vol_h24 > 0 else 0.0
     vol_wake_5m_ratio = (pair.vol_m5 / avg_5m_vol_24h) if avg_5m_vol_24h > 0 else 0.0
     vol_h1_share_24h_pct = (pair.vol_h1 / pair.vol_h24 * 100.0) if pair.vol_h24 > 0 else 0.0
     has_volume_wakeup = (
-        (pair.vol_m5 >= 1_200.0 and vol_wake_5m_ratio >= 3.5)
-        or (pair.vol_h1 >= 6_000.0 and vol_h1_share_24h_pct >= 30.0)
+        (pair.vol_m5 >= 1_200.0 and vol_wake_5m_ratio >= 2.5)
+        or (pair.vol_h1 >= 6_000.0 and vol_h1_share_24h_pct >= 25.0)
     )
 
-    # 6. LIVE DEMAND VELOCITY & ANTI-WASH-BOT 5m (Penyaring utama anti-koin gagal naik & mati!)
+    # 6. LIVE DEMAND VELOCITY, ANTI-VOLUME-DYING & ANTI-WASH-BOT 5m
     req_vol_m5 = (
-        min(cfg.min_vol_m5_usd, 1_200.0)
-        if (age_minutes < 10.0 or (age_minutes >= 720.0 and has_volume_wakeup))
+        min(cfg.min_vol_m5_usd, 1_400.0)
+        if (age_minutes >= 720.0 and has_volume_wakeup)
         else cfg.min_vol_m5_usd
     )
     vol_m5_ok = pair.vol_m5 >= req_vol_m5 and tx_5m >= 8
     vol_h1_ok = (age_minutes < 15.0) or (
         (pair.vol_h1 >= cfg.min_vol_h1_usd and turnover_h1_ratio >= cfg.min_turnover_h1_ratio)
-        or (age_minutes >= 720.0 and has_volume_wakeup and pair.vol_h1 >= 6_000.0)
+        or (age_minutes >= 720.0 and has_volume_wakeup and pair.vol_h1 >= 6_500.0 and turnover_h1_ratio >= 0.12)
     )
-    wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < 18.0
-    sideways_churn = turnover_h1_ratio >= 1.8 and p_h1 < 8.0
+    # Anti-Momentum-Death: cegah masuk koin yang volumenya sudah sekarat dibanding rata-rata 1h-nya!
+    vol_dying = (age_minutes >= 25.0) and (pair.vol_h1 > 0) and (vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio)
+    # Naikkan floor anti-wash-bot ke $22/tx (memblokir micro-bot $9–$15/tx seperti NORFEATH/Pompompurin)
+    wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < 22.0
+    sideways_churn = (not is_daily_coin) and turnover_h1_ratio >= 1.8 and p_h1 < 8.0
 
     effective_min_tx = compute_effective_min_tx_24h(age_minutes)
     tx_count_ok = tx_24h >= effective_min_tx
-    ticket_1h_ok = (tx_1h == 0) or (avg_ticket_1h >= 18.0)
+    ticket_1h_ok = (tx_1h == 0) or (avg_ticket_1h >= 20.0)
 
     flow_ok = (
         vol_m5_ok
         and vol_h1_ok
+        and (not vol_dying)
         and (not wash_bot_5m)
         and (not sideways_churn)
         and tx_count_ok
@@ -211,7 +244,11 @@ def evaluate_anti_top(
     )
     if wash_bot_5m:
         flow_detail = (
-            f"DITOLAK: Terdeteksi wash-bot 5m ({tx_5m} tx hanya ${pair.vol_m5:,.0f} = ${avg_ticket_5m:.1f}/tx)."
+            f"DITOLAK: Terdeteksi wash-bot/micro-bot 5m ({tx_5m} tx hanya ${pair.vol_m5:,.0f} = ${avg_ticket_5m:.1f}/tx)."
+        )
+    elif vol_dying:
+        flow_detail = (
+            f"DITOLAK: Volume 5m sedang sekarat/turun drastis (accel {vol_m5_accel_ratio:.2f}x dari rata-rata 1h — momentum habis)."
         )
     elif sideways_churn:
         flow_detail = (
@@ -231,35 +268,42 @@ def evaluate_anti_top(
         )
     else:
         flow_detail = (
-            f"Demand organik aktif: Vol5m ${pair.vol_m5:,.0f} (${avg_ticket_5m:.0f}/tx) · Turnover 1h {turnover_h1_ratio:.2f}x MC."
+            f"Demand organik hidup: Vol5m ${pair.vol_m5:,.0f} (accel {vol_m5_accel_ratio:.2f}x, ${avg_ticket_5m:.0f}/tx) · Turn1h {turnover_h1_ratio:.2f}x."
         )
 
     checks.append(
         GateCheck(
             id="orderflow_quality",
             layer="ANTI_TOP",
-            label="Kecepatan Demand Organik & Anti-Wash-Bot",
+            label="Kecepatan Demand, Akselerasi Vol & Anti-Wash-Bot",
             passed=flow_ok,
             severity="PASS" if flow_ok else "VETO",
-            actual=f"5m ${pair.vol_m5:,.0f} (${avg_ticket_5m:.0f}/tx) · 1h ${pair.vol_h1:,.0f} ({turnover_h1_ratio:.2f}x)",
-            threshold=f"5m >= ${req_vol_m5:,.0f} (>=8 tx, >=$18/tx) · 1h >= ${cfg.min_vol_h1_usd:,.0f} (>={cfg.min_turnover_h1_ratio:.2f}x MC)",
+            actual=f"5m ${pair.vol_m5:,.0f} ({vol_m5_accel_ratio:.2f}x · ${avg_ticket_5m:.0f}/tx) · 1h ${pair.vol_h1:,.0f}",
+            threshold=f"5m>=${req_vol_m5:,.0f}, accel>={cfg.min_vol_m5_accel_ratio:.2f}x, >=$22/tx",
             detail=flow_detail,
         )
     )
 
-    # 7. Tekanan Beli & Whale Absorption (Mendukung akumulasi whale saat retail TP + blokir Whale Siphon!)
+    # 7. Tekanan Beli, Whale Absorption & Akumulasi 6h (Anti-Dead-Cat Bounce pada koin distribusi!)
     whale_siphon = pair.buys_m5 >= 12 and buy_ratio_5m >= 62.0 and p_m5 < -1.0
     whale_absorption = (
         p_m5 >= 2.0 and 42.0 <= buy_ratio_5m < 48.0 and buy_ratio_1h >= 48.0
     )
+    h6_sell_bleed = age_minutes >= 360.0 and tx_6h >= 20 and buy_ratio_6h < 47.0
+
     if whale_siphon:
         siphon_ok = False
         siphon_sev = "VETO"
         siphon_detail = (
             f"DITOLAK: Whale Siphon — jumlah klik beli tinggi ({buy_ratio_5m:.0f}%) tetapi harga justru turun ({p_m5:+.1f}%)."
         )
+    elif h6_sell_bleed:
+        siphon_ok = False
+        siphon_sev = "VETO"
+        siphon_detail = (
+            f"DITOLAK: Distribusi multi-jam (6h buy hanya {buy_ratio_6h:.0f}%) — rawan dead-cat bounce lalu turun."
+        )
     elif p_m5 >= 2.0:
-        # Harga 5m naik >= +2%: izinkan buy_ratio_5m >= 42% (whale beli ukuran besar, retail TP ukuran kecil)
         siphon_ok = buy_ratio_5m >= 42.0 and buy_ratio_1h >= 48.0
         siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
         siphon_detail = (
@@ -272,7 +316,7 @@ def evaluate_anti_top(
             )
         )
     elif p_m5 < 0.0:
-        siphon_ok = buy_ratio_5m >= 52.0 and buy_ratio_1h >= 48.0
+        siphon_ok = buy_ratio_5m >= 52.0 and buy_ratio_1h >= 49.0
         siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
         siphon_detail = (
             "Pullback ringan masih diserap buyer."
@@ -280,7 +324,7 @@ def evaluate_anti_top(
             else "Harga 5m minus disertai dominasi jual — tunggu buyer kembali memegang kendali."
         )
     else:
-        siphon_ok = buy_ratio_5m >= 48.0 and buy_ratio_1h >= 48.0
+        siphon_ok = buy_ratio_5m >= 49.0 and buy_ratio_1h >= 49.0
         siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
         siphon_detail = (
             "Dominasi buyer sehat tanpa pola distribusi diam-diam."
@@ -292,17 +336,17 @@ def evaluate_anti_top(
         GateCheck(
             id="buy_pressure",
             layer="ANTI_TOP",
-            label="Tekanan Beli & Whale Absorption",
+            label="Tekanan Beli, Whale Absorption & Akumulasi 6h",
             passed=siphon_ok,
             severity=siphon_sev,
-            actual=f"5m {buy_ratio_5m:.0f}% buy ({p_m5:+.1f}%) · 1h {buy_ratio_1h:.0f}% buy",
-            threshold=">=48% buy (atau >=42% jika 5m >= +2% Whale Absorption) & anti-siphon",
+            actual=f"5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% · 6h {buy_ratio_6h:.0f}% buy",
+            threshold=">=49% buy (atau >=42% Whale Absorption), 6h>=47% & anti-siphon",
             detail=siphon_detail,
         )
     )
 
     # 8. Pre-ATH Extension Guard (Khusus koin berusia >= 6 jam: jangan masuk dekat ATH lokal)
-    is_near_local_ath = age_minutes >= 360.0 and (p_h6 > 180.0 or p_h24 > 300.0)
+    is_near_local_ath = age_minutes >= 360.0 and (p_h6 > 160.0 or p_h24 > 260.0)
     pre_ath_ok = not is_near_local_ath
     checks.append(
         GateCheck(
@@ -312,24 +356,24 @@ def evaluate_anti_top(
             passed=pre_ath_ok,
             severity="PASS" if pre_ath_ok else "WAIT_DIP",
             actual=f"6h {p_h6:+.1f}% · 24h {p_h24:+.1f}% (usia {age_minutes / 60.0:.1f}j)",
-            threshold="6h <= +180% & 24h <= +300% (sebelum zona ATH lokal)",
+            threshold="6h <= +160% & 24h <= +260% (sebelum zona ATH lokal)",
             detail=(
                 "Masih di fase awal sebelum zona ATH — ruang ambil profit puluhan persen tetap terbuka."
                 if pre_ath_ok
-                else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu pullback/base baru."
+                else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu base konsolidasi baru."
             ),
         )
     )
 
-    # 9. Deteksi Sleeper Revival / Aged Awakening (koin lahir >= 12 jam / beberapa hari lalu yg BARU bangun)
+    # 9. Deteksi Sleeper Revival / Daily Consolidation Candidate (usia >= 12 jam yg baru bangun)
     is_early_pre_ath_wave = (
-        1.0 <= p_m5 <= 22.0
-        and 2.0 <= p_h1 <= 85.0
-        and p_h6 <= 140.0
+        0.5 <= p_m5 <= 22.0
+        and -2.0 <= p_h1 <= 85.0
+        and p_h6 <= 120.0
         and p_h24 <= 220.0
     )
     has_revival_buyers = (
-        buy_ratio_5m >= 52.0 and buy_ratio_1h >= 50.0 and pair.buys_m5 >= 5
+        buy_ratio_5m >= 50.0 and buy_ratio_1h >= 50.0 and buy_ratio_6h >= 49.0 and pair.buys_m5 >= 5
     )
     is_sleeper_revival = (
         age_minutes >= 720.0
@@ -373,4 +417,6 @@ def evaluate_anti_top(
         avg_ticket_5m_usd=round(avg_ticket_5m, 2),
         turnover_h1_ratio=round(turnover_h1_ratio, 2),
         whale_absorption=whale_absorption,
+        vol_m5_accel_ratio=round(vol_m5_accel_ratio, 2),
+        buy_ratio_6h_pct=round(buy_ratio_6h, 1),
     )

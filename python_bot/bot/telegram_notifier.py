@@ -22,15 +22,30 @@ def format_entry_alert(audit: AuditResult) -> str:
     at = audit.anti_top
     ex = audit.execution
     sec = audit.security
+    st = audit.structure
     plan = audit.trade_plan
 
     age_days = at.age_minutes / 1440.0
     age_label = f"{age_days:.1f} hari" if age_days >= 1.0 else (f"{at.age_minutes / 60.0:.1f} jam" if at.age_minutes >= 60.0 else f"{at.age_minutes:.0f} menit")
-    title_line = (
-        f"⚡ <b>SLEEPER REVIVAL (PRE-ATH) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
-        if at.is_sleeper_revival
-        else f"🟢 <b>ENTRY READY — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
-    )
+    if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
+        title_line = f"💎 <b>DAILY CONSOLIDATION BREAKOUT — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+    elif at.is_sleeper_revival:
+        title_line = f"⚡ <b>SLEEPER REVIVAL (PRE-ATH) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+    else:
+        title_line = f"🟢 <b>ENTRY READY (OHLCV OK) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+
+    if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
+        chart_line = (
+            f"• Chart 1h (Akumulasi): Box <b>{st.base_range_pct:.0f}%</b> · Posisi <b>{st.range_position_pct:.0f}%</b> · "
+            f"GreenVol <b>{st.green_vol_share_pct:.0f}%</b> · Wick <code>{st.upper_wick_pct:.0f}%</code> · Ekspansi <b>{st.vol_expansion_ratio:.1f}x</b>"
+        )
+    elif st is not None and st.ohlcv_verified:
+        chart_line = (
+            f"• Chart 5m ({_esc(st.regime)}): GreenVol <b>{st.green_vol_share_pct:.0f}%</b> · "
+            f"Wick <code>{st.upper_wick_pct:.0f}%</code> · DD Peak <code>-{st.drawdown_from_peak_pct:.1f}%</code> · HL <b>{'Ya' if st.higher_low_intact else 'Flat'}</b>"
+        )
+    else:
+        chart_line = f"• Orderflow: 5m Accel <b>{at.vol_m5_accel_ratio:.2f}x</b> · 6h Buy <b>{at.buy_ratio_6h_pct:.0f}%</b>"
 
     lines = [
         title_line,
@@ -40,13 +55,10 @@ def format_entry_alert(audit: AuditResult) -> str:
         f"• Spot MC: <b>${at.spot_mc:,.0f}</b> → Proyeksi (+delay): <b>${at.projected_entry_mc:,.0f}</b>",
         f"• Koridor: {_esc(at.corridor_label)} (Headroom <b>+{at.net_headroom_pct:.1f}%</b>)",
         f"• 5m / 1h / 6h / 24h: <code>{at.p_m5:+.1f}%</code> / <code>{at.p_h1:+.1f}%</code> / <code>{at.p_h6:+.1f}%</code> / <code>{at.p_h24:+.1f}%</code>",
-        f"• Demand: Vol5m <b>${p.vol_m5:,.0f}</b> (${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> (<b>{at.turnover_h1_ratio:.2f}x</b> MC)"
+        f"• Demand: Vol5m <b>${p.vol_m5:,.0f}</b> (<b>{at.vol_m5_accel_ratio:.2f}x</b> · ${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> (<b>{at.turnover_h1_ratio:.2f}x</b> MC)"
         + (" · 🐋 <b>Whale Absorption</b>" if at.whale_absorption else ""),
-        f"• LP: <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.0f}% MC)" + (
-            f" | Wake-Up Vol: <b>x{at.vol_wake_5m_ratio:.1f}</b> (1h {at.vol_h1_share_24h_pct:.0f}% dr 24h)"
-            if at.is_sleeper_revival
-            else ""
-        ),
+        chart_line,
+        f"• LP: <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.0f}% MC) | Buy 5m/1h/6h: <code>{at.buy_ratio_5m_pct:.0f}%/{at.buy_ratio_1h_pct:.0f}%/{at.buy_ratio_6h_pct:.0f}%</code>",
         f"• Holder: <b>{sec.total_holders:,}</b> · Pareto Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code> · Dev <code>{sec.dev_pct}%</code>",
         f"• Jupiter: 0.1S <code>-{ex.round_trip_loss_01_sol_pct}%</code> | 1.0S <code>-{ex.depth_loss_1_sol_pct}%</code>",
     ]

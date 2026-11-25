@@ -5,9 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-LayerName = Literal["SECURITY", "ANTI_TOP", "EXECUTION"]
+LayerName = Literal["SECURITY", "ANTI_TOP", "STRUCTURE", "EXECUTION"]
 CheckSeverity = Literal["PASS", "WAIT_DIP", "VETO"]
 Verdict = Literal["ENTRY_READY", "WATCH_PULLBACK", "REJECTED"]
+StructureRegime = Literal[
+    "CONTINUATION_BREAKOUT",
+    "PULLBACK_RECLAIM",
+    "BULLISH_CONSOLIDATION_BREAKOUT",
+    "BULLISH_CONSOLIDATION_WAITING",
+    "BEARISH_DISTRIBUTION",
+    "EXHAUSTION_TOP",
+    "BREAKDOWN_DUMP",
+    "UNVERIFIED",
+]
 ExitSignalCode = Literal[
     "HOLDING_SAFE",
     "TP1_DERISK_BREAKEVEN",
@@ -60,6 +70,8 @@ class PairSnapshot:
     url: str = ""
     vol_h6: float = 0.0
     price_change_h6: float = 0.0
+    buys_h6: int = 0
+    sells_h6: int = 0
 
 
 @dataclass(frozen=True)
@@ -107,6 +119,25 @@ class AntiTopResult:
     avg_ticket_5m_usd: float = 0.0
     turnover_h1_ratio: float = 0.0
     whale_absorption: bool = False
+    vol_m5_accel_ratio: float = 1.0
+    buy_ratio_6h_pct: float = 50.0
+
+
+@dataclass(frozen=True)
+class StructureResult:
+    passed: bool
+    wait_dip_only: bool
+    regime: StructureRegime
+    ohlcv_verified: bool
+    checks: tuple[GateCheck, ...]
+    upper_wick_pct: float = 0.0
+    drawdown_from_peak_pct: float = 0.0
+    vol_expansion_ratio: float = 1.0
+    base_range_pct: float = 0.0
+    range_position_pct: float = 50.0
+    green_vol_share_pct: float = 50.0
+    higher_low_intact: bool = True
+    summary: str = "Struktur chart terverifikasi."
 
 
 @dataclass(frozen=True)
@@ -154,6 +185,7 @@ class AuditResult:
     headline: str
     trade_plan: Optional[TradePlan]
     audited_at_ms: int
+    structure: Optional[StructureResult] = None
 
 
 @dataclass

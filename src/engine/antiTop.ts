@@ -70,6 +70,10 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const buysH1 = Math.max(0, Math.round(asNum(pair.txns?.h1?.buys)));
   const sellsH1 = Math.max(0, Math.round(asNum(pair.txns?.h1?.sells)));
   const totalTxH1 = buysH1 + sellsH1;
+  const txnsAny = pair.txns as Record<string, { buys?: unknown; sells?: unknown } | undefined> | undefined;
+  const buysH6 = Math.max(0, Math.round(asNum(txnsAny?.h6?.buys)));
+  const sellsH6 = Math.max(0, Math.round(asNum(txnsAny?.h6?.sells)));
+  const totalTxH6 = buysH6 + sellsH6;
   const totalTx24h =
     Math.max(0, Math.round(asNum(pair.txns?.h24?.buys))) +
     Math.max(0, Math.round(asNum(pair.txns?.h24?.sells)));
@@ -77,6 +81,7 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const buySellRatioM5 = buysM5 / Math.max(1, sellsM5);
   const buyRatio5mPctEarly = totalTxM5 > 0 ? (buysM5 / totalTxM5) * 100 : 50;
   const buyRatio1hPctEarly = totalTxH1 > 0 ? (buysH1 / totalTxH1) * 100 : 50;
+  const buyRatio6hPctEarly = totalTxH6 > 0 ? (buysH6 / totalTxH6) * 100 : buyRatio1hPctEarly;
   const avgTicketM5Usd = totalTxM5 > 0 ? volM5 / totalTxM5 : 0;
   const avgTicketH1Usd = totalTxH1 > 0 ? volH1 / totalTxH1 : 0;
   const turnoverH1Ratio = spotMc > 0 ? volH1 / spotMc : 0;
@@ -86,6 +91,7 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const createdAtMs = asNum(pair.pairCreatedAt, 0);
   const ageMinutes =
     createdAtMs > 0 ? Math.max(1, (Date.now() - createdAtMs) / 60_000) : 60;
+  const isDailyCoin = ageMinutes >= 20 * 60;
 
   const { corridor, redZoneReason } = classifyCleanCorridor(spotMc, cfg.includeMidCapCorridor);
 
@@ -146,31 +152,52 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     );
   }
 
-  // 3. Anti-Parabolic Cap & Anti-Dead-Bounce Floor
+  // 2b. Survival Age Guard (>= 20m — anti-dump sniper pasca-migrasi)
+  const survivalAgeOk = ageMinutes >= 20;
+  checks.push({
+    id: 'survival_age',
+    layer: 'ANTI_TOP',
+    label: 'Usia Bertahan Pasca-Migrasi (Anti-Sniper Dump)',
+    passed: survivalAgeOk,
+    severity: 'WAIT_DIP',
+    actual: `${Math.round(ageMinutes)} menit`,
+    threshold: '>= 20 menit',
+    detail: survivalAgeOk
+      ? `Sudah bertahan ${Math.round(ageMinutes)} menit pasca-migrasi.`
+      : `Terlalu baru (${Math.round(ageMinutes)}m < 20m) — tunggu lolos dump sniper pertama & membentuk base.`,
+  });
+  if (!survivalAgeOk) {
+    waitReasons.push(`Terlalu baru (${Math.round(ageMinutes)}m < 20m) — tunggu lolos dump sniper awal`);
+  }
+
+  // 3. Anti-Parabolic Cap (Adaptif Usia!) & Anti-Dead-Bounce Floor
+  const isProvenRunner = ageMinutes >= 120 && totalTx24h >= 1_200;
+  const effectiveMaxH1 = isProvenRunner ? cfg.maxH1ChangePct : Math.min(cfg.maxH1ChangePct, 115);
+  const h1Floor = isDailyCoin && pM5 >= 1.5 ? -12.0 : -10.0;
   const m5TooHot = pM5 > cfg.maxM5ChangePct;
-  const m5FallingKnife = pM5 < -3.5 || pH1 < -10.0;
-  const h1TooExtended = pH1 > cfg.maxH1ChangePct;
+  const m5FallingKnife = pM5 < -3.5 || pH1 < h1Floor;
+  const h1TooExtended = pH1 > effectiveMaxH1;
   const momentumClean = !m5TooHot && !m5FallingKnife && !h1TooExtended;
 
   checks.push({
     id: 'anti_parabolic',
     layer: 'ANTI_TOP',
-    label: 'Anti-Chasing & Anti-Koin Sekarat',
+    label: 'Anti-Pucuk Parabolik (Adaptif Usia) & Anti-Koin Jatuh',
     passed: momentumClean,
     severity: m5FallingKnife ? 'HARD_VETO' : 'WAIT_DIP',
     actual: `5m ${pM5 >= 0 ? '+' : ''}${pM5.toFixed(1)}% · 1h ${pH1 >= 0 ? '+' : ''}${pH1.toFixed(1)}%`,
-    threshold: `5m -3.5%..+${cfg.maxM5ChangePct}% · 1h -10%..+${cfg.maxH1ChangePct}%`,
+    threshold: `5m -3.5%..+${cfg.maxM5ChangePct}% · 1h ${h1Floor}%..+${effectiveMaxH1}%`,
     detail: m5TooHot
       ? `Candle 5m sudah melonjak vertikal +${pM5.toFixed(1)}% — dilarang kejar pucuk, tunggu koreksi sehat.`
       : h1TooExtended
-      ? `Kenaikan 1 jam sudah parabolik +${pH1.toFixed(1)}% — rawan distribusi early buyer.`
+      ? `Kenaikan 1 jam sudah parabolik +${pH1.toFixed(1)}% (> +${effectiveMaxH1}%) — rawan distribusi puncak.`
       : m5FallingKnife
-      ? `Tren sedang jatuh/sekarat (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%) — jangan beli koin mati.`
-      : 'Laju kenaikan terkendali (aktif naik/konsolidasi, bukan candle parabolik vertikal).',
+      ? `Tren sedang jatuh/sekarat (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%) — jangan beli pisau jatuh.`
+      : 'Laju kenaikan terkendali (belum pucuk vertikal dan tidak sedang jatuh).',
   });
   if (m5FallingKnife) vetoReasons.push(`Tren sedang jatuh (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%)`);
   if (m5TooHot) waitReasons.push(`Overextended 5m (+${pM5.toFixed(1)}% > +${cfg.maxM5ChangePct}%) — tunggu pullback`);
-  if (h1TooExtended) waitReasons.push(`Parabolik 1h (+${pH1.toFixed(1)}% > +${cfg.maxH1ChangePct}%) — rawan distribusi`);
+  if (h1TooExtended) waitReasons.push(`Parabolik 1h (+${pH1.toFixed(1)}% > +${effectiveMaxH1}%) — rawan puncak`);
 
   // 4. Liquidity Floor & Depth Ratio
   const reqLiq = Math.max(cfg.minLiquidityUsd, corridor?.minLiqUsd ?? cfg.minLiquidityUsd);
@@ -193,19 +220,23 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     vetoReasons.push(`Likuiditas tipis ($${Math.round(liqUsd).toLocaleString()}, ${liqMcRatioPct.toFixed(1)}% MC)`);
   }
 
-  // 5. Live Demand Velocity, Anti-Wash-Bot & Whale Absorption Buy Pressure
-  const minTicketM5 = corridor?.minAvgTicketM5Usd ?? 18.0;
-  const isMicroBotnetH1 = totalTxH1 >= 250 && avgTicketH1Usd < 18.0;
+  // 5. Live Demand Velocity, Akselerasi Vol (Anti-Sekarat), Anti-Wash-Bot & Akumulasi 6h
+  const minTicketM5 = corridor?.minAvgTicketM5Usd ?? 22.0;
+  const isMicroBotnetH1 = totalTxH1 >= 250 && avgTicketH1Usd < 20.0;
   const isMicroTicketM5 = totalTxM5 >= 12 && avgTicketM5Usd < minTicketM5;
   const isWhaleSiphonM5 = buysM5 >= 12 && buyRatio5mPctEarly >= 62 && pM5 < -1.0;
-  const isSidewaysChurnH1 = turnoverH1Ratio >= 1.8 && pH1 < 8.0;
+  const isH6SellBleed = ageMinutes >= 360 && totalTxH6 >= 20 && buyRatio6hPctEarly < 47.0;
+  const isVolDying = ageMinutes >= 25 && volH1 > 0 && volAccelRatio < 0.55;
+  const isSidewaysChurnH1 = !isDailyCoin && turnoverH1Ratio >= 1.8 && pH1 < 8.0;
   const whaleAbsorption = pM5 >= 2.0 && buyRatio5mPctEarly >= 42.0 && buyRatio1hPctEarly >= 48.0;
-  const buyerPressureOk = whaleAbsorption || (buyRatio5mPctEarly >= 48.0 && buyRatio1hPctEarly >= 48.0);
-  const reqVolM5 = ageMinutes < 10 ? 1_200 : 2_000;
+  const buyerPressureOk = whaleAbsorption || (buyRatio5mPctEarly >= 49.0 && buyRatio1hPctEarly >= 49.0);
+  const reqVolM5 = ageMinutes >= 720 ? 1_400 : 2_000;
   const volVelocityOk =
     totalTxM5 >= 8 &&
     volM5 >= reqVolM5 &&
-    (ageMinutes < 15 || (volH1 >= 15_000 && turnoverH1Ratio >= 0.25));
+    (ageMinutes < 15 ||
+      (volH1 >= 15_000 && turnoverH1Ratio >= 0.25) ||
+      (ageMinutes >= 720 && volH1 >= 6_500 && turnoverH1Ratio >= 0.12));
   const hasMinActivity = volVelocityOk && buyerPressureOk;
 
   const baseMinTx24h = corridor?.minTx24h ?? 60;
@@ -217,6 +248,8 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     !isMicroBotnetH1 &&
     !isMicroTicketM5 &&
     !isWhaleSiphonM5 &&
+    !isH6SellBleed &&
+    !isVolDying &&
     !isSidewaysChurnH1 &&
     hasMinActivity &&
     tx24hOk;
@@ -224,17 +257,19 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   checks.push({
     id: 'organic_orderflow',
     layer: 'ORDERFLOW',
-    label: 'Demand Velocity, Anti-Wash & Whale Absorption',
+    label: 'Demand Velocity, Akselerasi Vol & Akumulasi 6h',
     passed: flowOk,
     severity: 'HARD_VETO',
-    actual: `Vol5m $${Math.round(volM5).toLocaleString()} ($${avgTicketM5Usd.toFixed(0)}/tx) · Turn1h ${turnoverH1Ratio.toFixed(
-      2
-    )}x · Buy5m ${buyRatio5mPctEarly.toFixed(0)}%`,
-    threshold: `Vol5m >= $${reqVolM5.toLocaleString()} · Turn1h >= 0.25x · Avg5m >= $${minTicketM5} · Anti-Wash`,
+    actual: `Vol5m $${Math.round(volM5).toLocaleString()} (${volAccelRatio.toFixed(2)}x · $${avgTicketM5Usd.toFixed(0)}/tx) · 6hBuy ${buyRatio6hPctEarly.toFixed(0)}%`,
+    threshold: `Vol5m >= $${reqVolM5.toLocaleString()} · Accel >= 0.55x · Avg5m >= $${minTicketM5} · 6hBuy >= 47%`,
     detail: isMicroBotnetH1
       ? `Botnet spam H1 terdeteksi (${totalTxH1} tx dengan tiket rata-rata receh $${avgTicketH1Usd.toFixed(1)}).`
       : isWhaleSiphonM5
       ? `Divergensi Whale Siphon: klik beli ramai (${buysM5}B/${sellsM5}S) tapi harga turun (${pM5.toFixed(1)}%).`
+      : isH6SellBleed
+      ? `Distribusi multi-jam terdeteksi (6h buy hanya ${buyRatio6hPctEarly.toFixed(0)}%) — rawan konsolidasi turun / dead-cat bounce.`
+      : isVolDying
+      ? `Volume 5m sekarat (accel ${volAccelRatio.toFixed(2)}x dari rata-rata 1h) — bensin momentum sudah habis.`
       : isSidewaysChurnH1
       ? `Wash-trading/distribusi sideways: turnover 1h ${turnoverH1Ratio.toFixed(2)}x MC tapi harga hanya ${pH1.toFixed(1)}%.`
       : isMicroTicketM5
@@ -247,19 +282,21 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
       ? `Riwayat transaksi pair masih di bawah ambang (${totalTx24h} < ${effectiveMinTx24h}).`
       : whaleAbsorption
       ? 'Demand organik kuat + Whale Absorption terdeteksi (harga naik meski retail TP).'
-      : 'Kecepatan demand organik aktif tanpa wash-bot atau siphon.',
+      : 'Kecepatan demand & akselerasi volume organik aktif tanpa wash-bot.',
   });
 
   if (isMicroBotnetH1) vetoReasons.push(`Botnet micro-ticket H1 ($${avgTicketH1Usd.toFixed(1)}/tx)`);
   if (isWhaleSiphonM5) vetoReasons.push('Whale Siphon: klik beli tinggi tapi harga minus');
+  if (isH6SellBleed) vetoReasons.push(`Distribusi 6h (${buyRatio6hPctEarly.toFixed(0)}% buy) — konsolidasi turun`);
+  if (isVolDying) vetoReasons.push(`Volume 5m sekarat (accel ${volAccelRatio.toFixed(2)}x < 0.55x)`);
   if (isSidewaysChurnH1) vetoReasons.push('Wash-trading / distribusi sideways H1');
   if (isMicroTicketM5) vetoReasons.push(`Wash-bot 5m ($${avgTicketM5Usd.toFixed(1)}/tx < $${minTicketM5})`);
   if (!volVelocityOk) vetoReasons.push(`Demand terlalu lesu (Vol5m $${Math.round(volM5).toLocaleString()}, Turn1h ${turnoverH1Ratio.toFixed(2)}x)`);
   if (!buyerPressureOk) vetoReasons.push(`Tekanan jual mendominasi (Buy5m ${buyRatio5mPctEarly.toFixed(0)}%)`);
   if (!tx24hOk) vetoReasons.push(`Transaksi pair kurang (${totalTx24h} < ${effectiveMinTx24h})`);
 
-  // 6. Pre-ATH Extension Guard (Khusus koin berusia >= 6 jam: jangan kejar yang sudah terbang 3x–4x dekat ATH lokal)
-  const isNearLocalAth = ageMinutes >= 360 && (pH6 > 180 || pH24 > 300);
+  // 6. Pre-ATH Extension Guard (Khusus koin berusia >= 6 jam: jangan kejar yang sudah terbang dekat ATH lokal)
+  const isNearLocalAth = ageMinutes >= 360 && (pH6 > 160 || pH24 > 260);
   const preAthOk = !isNearLocalAth;
   checks.push({
     id: 'pre_ath_extension',
@@ -268,7 +305,7 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     passed: preAthOk,
     severity: 'WAIT_DIP',
     actual: `6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(1)}% · 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(1)}%`,
-    threshold: '6h <= +180% & 24h <= +300% (sebelum zona ATH lokal)',
+    threshold: '6h <= +160% & 24h <= +260% (sebelum zona ATH lokal)',
     detail: preAthOk
       ? 'Masih di fase awal sebelum zona ATH — ruang ambil profit puluhan persen tetap sehat.'
       : 'Koin berusia >= 6 jam sudah naik terlalu tinggi (mendekati ATH lokal) — tunggu pullback/base baru.',
@@ -279,7 +316,7 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     );
   }
 
-  // 7. Sleeper Revival / Aged Coin Awakening Detector (lahir >= 12 jam / beberapa hari lalu & baru mulai naik sebelum ATH)
+  // 7. Sleeper Revival / Daily Consolidation Breakout Detector (usia >= 12 jam / harian yg baru bangun akumulasi)
   const avg5mVol24h = volH24 > 0 ? volH24 / 288 : 0;
   const volWake5mRatio = avg5mVol24h > 0 ? volM5 / avg5mVol24h : 0;
   const volH1Share24hPct = volH24 > 0 ? (volH1 / volH24) * 100 : 0;
@@ -287,11 +324,12 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const buyRatio1hPct = totalTxH1 > 0 ? (buysH1 / totalTxH1) * 100 : 50;
 
   const hasVolumeWakeup =
-    (volM5 >= 1_200 && volWake5mRatio >= 3.5) ||
-    (volH1 >= 6_000 && volH1Share24hPct >= 30);
+    (volM5 >= 1_200 && volWake5mRatio >= 2.5) ||
+    (volH1 >= 6_000 && volH1Share24hPct >= 25);
   const isEarlyPreAthWave =
-    pM5 >= 1.0 && pM5 <= 22.0 && pH1 >= 2.0 && pH1 <= 85.0 && pH6 <= 140.0 && pH24 <= 220.0;
-  const hasRevivalBuyers = buyRatio5mPct >= 54.0 && buyRatio1hPct >= 52.0 && buysM5 >= 4;
+    pM5 >= 0.5 && pM5 <= 22.0 && pH1 >= -2.0 && pH1 <= 85.0 && pH6 <= 120.0 && pH24 <= 220.0;
+  const hasRevivalBuyers =
+    buyRatio5mPct >= 50.0 && buyRatio1hPct >= 50.0 && buyRatio6hPctEarly >= 49.0 && buysM5 >= 5;
 
   const isSleeperRevival =
     ageMinutes >= 720 &&

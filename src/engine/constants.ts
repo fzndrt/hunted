@@ -43,12 +43,12 @@ export function isValidSolanaMint(value: string): boolean {
 
 export const DEFAULT_SCAN_CONFIG: ScanConfig = {
   reactionDelaySec: 22,
-  minScore: 72,
+  minScore: 76,
   maxRoundTripLossPct: 5.5,
   maxDepthCliffLossPct: 13.5,
   minNetHeadroomPct: 18.0,
-  maxM5ChangePct: 28.0,
-  maxH1ChangePct: 240.0,
+  maxM5ChangePct: 22.0,
+  maxH1ChangePct: 210.0,
   minLiquidityUsd: 12_000,
   includeMidCapCorridor: true,
 };
@@ -67,7 +67,7 @@ export const ENTRY_CORRIDORS: CorridorDefinition[] = [
     minLiqUsd: 12_000,
     minLiqMcRatioPct: 12.0,
     minTx24h: 60,
-    minAvgTicketM5Usd: 18.0,
+    minAvgTicketM5Usd: 22.0,
     minHolders: 95,
     defaultStopLossPct: 16,
     tp1GainPct: 35,
@@ -82,7 +82,7 @@ export const ENTRY_CORRIDORS: CorridorDefinition[] = [
     minLiqUsd: 18_000,
     minLiqMcRatioPct: 10.0,
     minTx24h: 180,
-    minAvgTicketM5Usd: 20.0,
+    minAvgTicketM5Usd: 22.0,
     minHolders: 180,
     defaultStopLossPct: 15,
     tp1GainPct: 35,

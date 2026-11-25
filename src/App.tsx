@@ -20,7 +20,7 @@ type ActiveTab = 'radar' | 'inspector' | 'exits' | 'architecture';
 const LOCAL_POSITIONS_KEY = 'corridor_desk_positions_v2';
 
 const NAV_ITEMS: Array<{ id: ActiveTab; label: string; breadcrumb: string; icon: typeof Activity }> = [
-  { id: 'architecture', label: 'Kode Repo (24 File)', breadcrumb: 'Explorer & Salin Kode (24 File · Vercel Ready)', icon: Layers },
+  { id: 'architecture', label: 'Kode Repo (25 File)', breadcrumb: 'Explorer & Salin Kode (25 File · Vercel Ready)', icon: Layers },
   { id: 'radar', label: 'Pelacak Koin', breadcrumb: 'Pelacak Koin Live', icon: Activity },
   { id: 'inspector', label: 'Audit Mint', breadcrumb: 'Audit Mint', icon: Search },
   { id: 'exits', label: 'Exit Guard', breadcrumb: 'Exit Guard', icon: ShieldAlert },
@@ -348,7 +348,7 @@ export default function App() {
                 onClick={() => setActiveTab(activeTab === 'architecture' ? 'radar' : 'architecture')}
                 className="px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#111827] hover:bg-slate-800 border border-slate-700 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
-                {activeTab === 'architecture' ? 'Pelacak Koin' : 'Salin Kode (24 File)'}
+                {activeTab === 'architecture' ? 'Pelacak Koin' : 'Salin Kode (25 File)'}
               </button>
               <button
                 type="button"

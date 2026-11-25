@@ -177,21 +177,26 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   const cfg: ScanConfig = { ...DEFAULT_SCAN_CONFIG, ...(partialCfg ?? {}) };
   const feedNotes: string[] = [];
 
-  // 1. Staggered GeckoTerminal (anti-429) + Parallel Organic DexScreener Feeds
+  // 1. Staggered GeckoTerminal 5m/1h/6h (anti-429) + Parallel Organic DexScreener Feeds
   const fetchGeckoStaggered = async () => {
     const gt5m = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1',
       4000
     );
-    await new Promise((r) => setTimeout(r, 750));
+    await new Promise((r) => setTimeout(r, 700));
     const gt1h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
       4000
     );
-    return [gt5m, gt1h] as const;
+    await new Promise((r) => setTimeout(r, 700));
+    const gt6h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
+      'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
+      4000
+    );
+    return [gt5m, gt1h, gt6h] as const;
   };
 
-  const [[gt5m, gt1h], dsPump, dsRay, dsCto, dsBoostsTop] = await Promise.all([
+  const [[gt5m, gt1h, gt6h], dsPump, dsRay, dsCto, dsBoostsTop] = await Promise.all([
     fetchGeckoStaggered(),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
       'https://api.dexscreener.com/latest/dex/search?q=pumpswap',
@@ -240,6 +245,7 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
 
   extractGtMints(gt5m, 'GeckoTerminal 5m Trending');
   extractGtMints(gt1h, 'GeckoTerminal 1h Revival');
+  extractGtMints(gt6h, 'GeckoTerminal 6h Daily Consolidation');
 
   for (const [searchPayload, label] of [
     [dsPump, 'DexScreener PumpSwap'],
