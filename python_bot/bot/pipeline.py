@@ -115,19 +115,26 @@ async def inspect_mint(
 async def run_scan_cycle(
     client: httpx.AsyncClient, cfg: BotConfig, max_stage2: int = 16
 ) -> tuple[list[AuditResult], list[str]]:
-    candidates, feed_notes = await discover_solana_candidates(client, max_candidates=45)
+    from .config import ORGANIC_FEED_SOURCES
 
-    # Prioritaskan token yang sudah masuk koridor aman & Sleeper Revival agar cepat selesai di Serverless
-    in_corridor: list[PairSnapshot] = []
-    other_active: list[PairSnapshot] = []
-    for p in candidates:
-        if 18_000.0 <= p.market_cap <= 420_000.0 and p.liquidity_usd >= 8_000.0:
-            in_corridor.append(p)
-        elif p.liquidity_usd >= 8_000.0:
-            other_active.append(p)
+    candidates, feed_notes = await discover_solana_candidates(client, max_candidates=60)
+
+    # Prioritaskan token organik di koridor $25K–$450K yang benar-benar punya kecepatan volume 5m hidup
+    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, float, float]:
+        organic_hits = sum(1 for src in p.feed_sources if src in ORGANIC_FEED_SOURCES)
+        in_corridor = 1 if (22_000.0 <= p.market_cap <= 450_000.0 and p.liquidity_usd >= 10_000.0) else 0
+        has_live_vol = 1 if p.vol_m5 >= 1_200.0 else 0
+        return (in_corridor, has_live_vol, organic_hits * 25_000.0 + p.vol_m5, p.vol_h1)
+
+    eligible = [
+        p
+        for p in candidates
+        if 20_000.0 <= p.market_cap <= 600_000.0 and p.liquidity_usd >= 8_000.0
+    ]
+    eligible.sort(key=_candidate_rank, reverse=True)
 
     effective_limit = min(max_stage2, 12) if cfg.is_vercel else max_stage2
-    to_audit = (in_corridor + other_active)[:effective_limit]
+    to_audit = eligible[:effective_limit]
     sem = asyncio.Semaphore(5 if cfg.is_vercel else 4)
 
     async def bounded_audit(pair: PairSnapshot) -> AuditResult:

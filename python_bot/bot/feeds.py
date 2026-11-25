@@ -6,7 +6,12 @@ import asyncio
 from typing import Any, Optional
 import httpx
 
-from .config import SOL_MINT, VERIFIED_HARD_QUOTE_MINTS, is_valid_solana_mint
+from .config import (
+    ORGANIC_FEED_SOURCES,
+    SOL_MINT,
+    VERIFIED_HARD_QUOTE_MINTS,
+    is_valid_solana_mint,
+)
 from .models import PairSnapshot
 
 
@@ -171,23 +176,44 @@ async def fetch_pairs_batch(
     return results
 
 
+async def _fetch_gecko_staggered(
+    client: httpx.AsyncClient,
+) -> tuple[Any, Any]:
+    """Tarik GeckoTerminal 5m & 1h berurutan (jeda 0.75s) agar tidak terkena HTTP 429 burst."""
+    gt_5m = await _get_json(
+        client,
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m",
+    )
+    await asyncio.sleep(0.75)
+    gt_1h = await _get_json(
+        client,
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h",
+    )
+    return gt_5m, gt_1h
+
+
 async def discover_solana_candidates(
-    client: httpx.AsyncClient, max_candidates: int = 50
+    client: httpx.AsyncClient, max_candidates: int = 60
 ) -> tuple[list[PairSnapshot], list[str]]:
-    """Kumpulkan kandidat dari 8 feed paralel (termasuk koin tua Sleeper Revival 1h & Top Boosts)."""
-    urls = {
-        "gecko_trending_5m": "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m",
-        "gecko_trending_1h": "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h",
-        "gecko_new_pools": "https://api.geckoterminal.com/api/v2/networks/solana/new_pools",
+    """
+    Kumpulkan kandidat organik dari 6 sumber utama anti-429 & anti-paid-boost bias:
+      - Organik: GeckoTerminal 5m & 1h (staggered), DexScreener PumpSwap, Raydium, Community Takeovers
+      - Sekunder: DexScreener Top Boosts (tidak pernah mendominasi urutan di atas feed organik)
+    """
+    dex_urls = {
         "dex_pumpswap": "https://api.dexscreener.com/latest/dex/search?q=pumpswap",
         "dex_raydium": "https://api.dexscreener.com/latest/dex/search?q=raydium",
-        "dex_profiles": "https://api.dexscreener.com/token-profiles/latest/v1",
-        "dex_boosts": "https://api.dexscreener.com/token-boosts/latest/v1",
+        "dex_community_takeovers": "https://api.dexscreener.com/community-takeovers/latest/v1",
         "dex_boosts_top": "https://api.dexscreener.com/token-boosts/top/v1",
     }
 
-    keys = list(urls.keys())
-    responses = await asyncio.gather(*(_get_json(client, urls[k]) for k in keys))
+    dex_keys = list(dex_urls.keys())
+    gecko_task = _fetch_gecko_staggered(client)
+    dex_tasks = [_get_json(client, dex_urls[k]) for k in dex_keys]
+    gathered = await asyncio.gather(gecko_task, *dex_tasks)
+    gt_5m, gt_1h = gathered[0]
+    dex_responses = gathered[1:]
+
     sources_map: dict[str, set[str]] = {}
     notes: list[str] = []
 
@@ -196,34 +222,49 @@ async def discover_solana_candidates(
         if is_valid_solana_mint(m) and m not in VERIFIED_HARD_QUOTE_MINTS:
             sources_map.setdefault(m, set()).add(source)
 
-    for key, payload in zip(keys, responses):
-        count_before = sum(1 for s in sources_map.values() if key in s)
-        if key.startswith("gecko_") and isinstance(payload, dict):
+    for key, payload in (("gecko_trending_5m", gt_5m), ("gecko_trending_1h", gt_1h)):
+        before = sum(1 for s in sources_map.values() if key in s)
+        if isinstance(payload, dict):
             for item in payload.get("data") or []:
                 rel = (item.get("relationships") or {}).get("base_token") or {}
                 tid = str((rel.get("data") or {}).get("id") or "")
                 if tid.startswith("solana_"):
                     add_mint(tid.replace("solana_", "", 1), key)
-        elif key in {"dex_pumpswap", "dex_raydium"} and isinstance(payload, dict):
+        after = sum(1 for s in sources_map.values() if key in s)
+        notes.append(f"{key}:{after - before}")
+
+    for key, payload in zip(dex_keys, dex_responses):
+        before = sum(1 for s in sources_map.values() if key in s)
+        if key in {"dex_pumpswap", "dex_raydium"} and isinstance(payload, dict):
             for p in payload.get("pairs") or []:
                 if str(p.get("chainId") or "").lower() == "solana":
                     add_mint(str((p.get("baseToken") or {}).get("address") or ""), key)
-        elif key in {"dex_profiles", "dex_boosts", "dex_boosts_top"} and isinstance(payload, list):
-            for item in payload[:30]:
+        elif key in {"dex_community_takeovers", "dex_boosts_top"} and isinstance(payload, list):
+            for item in payload[:25]:
                 if str(item.get("chainId") or "").lower() == "solana":
                     add_mint(str(item.get("tokenAddress") or ""), key)
-        count_after = sum(1 for s in sources_map.values() if key in s)
-        notes.append(f"{key}:{count_after - count_before}")
+        after = sum(1 for s in sources_map.values() if key in s)
+        notes.append(f"{key}:{after - before}")
 
-    # Prioritaskan token yang muncul di lebih dari satu feed
-    ranked_mints = sorted(
-        sources_map.keys(), key=lambda m: len(sources_map[m]), reverse=True
-    )[:max_candidates]
+    # Prioritaskan token dari feed ORGANIK (Gecko 5m/1h, PumpSwap, Raydium, CTO) — bukan paid boosts!
+    def _mint_priority(m: str) -> tuple[int, int]:
+        srcs = sources_map[m]
+        organic_cnt = sum(1 for s in srcs if s in ORGANIC_FEED_SOURCES)
+        gecko_bonus = 1 if ("gecko_trending_5m" in srcs or "gecko_trending_1h" in srcs) else 0
+        return (organic_cnt + gecko_bonus, len(srcs))
+
+    ranked_mints = sorted(sources_map.keys(), key=_mint_priority, reverse=True)[
+        :max_candidates
+    ]
 
     batch = await fetch_pairs_batch(client, ranked_mints, sources_map)
     pairs = list(batch.values())
     pairs.sort(
-        key=lambda p: (len(p.feed_sources), p.vol_m5, p.liquidity_usd),
+        key=lambda p: (
+            sum(1 for s in p.feed_sources if s in ORGANIC_FEED_SOURCES),
+            p.vol_m5,
+            p.vol_h1,
+        ),
         reverse=True,
     )
     return pairs, notes

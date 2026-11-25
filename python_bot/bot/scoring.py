@@ -71,18 +71,24 @@ def score_and_finalize(
     execution: ExecutionResult,
     cfg: BotConfig,
 ) -> AuditResult:
-    # Pilar 1: Keamanan & Distribusi (25 poin)
+    # Pilar 1: Keamanan, Distribusi & Basis Holder (25 poin)
     p1 = 0
     if security.passed:
-        p1 += 15
+        p1 += 13
         if (security.top10_pct or 100.0) <= 22.0:
-            p1 += 6
+            p1 += 5
         elif (security.top10_pct or 100.0) <= 28.0:
             p1 += 3
         if (security.dev_pct or 100.0) <= 1.0:
-            p1 += 4
+            p1 += 3
         elif (security.dev_pct or 100.0) <= 2.0:
             p1 += 2
+        if security.total_holders >= 1_500:
+            p1 += 4
+        elif security.total_holders >= 400:
+            p1 += 2
+        elif security.total_holders >= 150:
+            p1 += 1
     else:
         p1 = sum(2 for c in security.checks if c.passed)
         p1 = min(p1, 10)
@@ -92,30 +98,36 @@ def score_and_finalize(
     if anti_top.corridor_id == "CORRIDOR_A_EARLY":
         p2 += 14
     elif anti_top.corridor_id == "CORRIDOR_B_POST100K":
-        p2 += 12
+        p2 += 13
     elif anti_top.corridor_id == "CORRIDOR_C_EXPANSION":
-        p2 += 9
+        p2 += 11
     if anti_top.net_headroom_pct >= 35.0:
         p2 += 11
     elif anti_top.net_headroom_pct >= 25.0:
         p2 += 8
     elif anti_top.net_headroom_pct >= cfg.min_net_headroom_pct:
-        p2 += 5
+        p2 += 6
 
-    # Pilar 3: Orderflow & Momentum Sehat (20 poin)
+    # Pilar 3: Demand Velocity, Whale Absorption & Momentum Sehat (20 poin)
     p3 = 0
-    if 0.0 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
-        p3 += 7
-    elif -8.0 <= anti_top.p_m5 < 0.0:
+    if 1.0 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
+        p3 += 6
+    elif -2.0 <= anti_top.p_m5 < 1.0:
+        p3 += 4
+    if anti_top.buy_ratio_5m_pct >= 55.0 or anti_top.whale_absorption:
         p3 += 5
-    if anti_top.buy_ratio_5m_pct >= 56.0:
-        p3 += 7
     elif anti_top.buy_ratio_5m_pct >= 48.0:
         p3 += 4
-    if anti_top.avg_ticket_1h_usd >= 45.0:
-        p3 += 6
-    elif anti_top.avg_ticket_1h_usd >= 18.0:
+    if anti_top.turnover_h1_ratio >= 1.0:
+        p3 += 5
+    elif anti_top.turnover_h1_ratio >= 0.45:
         p3 += 3
+    elif anti_top.turnover_h1_ratio >= cfg.min_turnover_h1_ratio:
+        p3 += 2
+    if anti_top.avg_ticket_5m_usd >= 60.0 or anti_top.avg_ticket_1h_usd >= 60.0:
+        p3 += 4
+    elif anti_top.avg_ticket_5m_usd >= 25.0 or anti_top.avg_ticket_1h_usd >= 25.0:
+        p3 += 2
 
     # Pilar 4: Likuiditas & Kedalaman Jupiter (20 poin)
     p4 = 0
@@ -132,36 +144,44 @@ def score_and_finalize(
             p4 += 6
         else:
             p4 += 4
-        if anti_top.liq_mc_ratio_pct >= 18.0:
+        if anti_top.liq_mc_ratio_pct >= 16.0:
             p4 += 4
-        elif anti_top.liq_mc_ratio_pct >= 12.0:
+        elif anti_top.liq_mc_ratio_pct >= 11.0:
             p4 += 2
 
-    # Pilar 5: Kesegaran / Sleeper Revival & Konfirmasi Multi-Feed (10 poin)
+    # Pilar 5: Kesegaran / Sleeper Revival & Konfirmasi Feed Organik (10 poin)
+    from .config import ORGANIC_FEED_SOURCES
+
+    organic_feeds_count = sum(1 for s in pair.feed_sources if s in ORGANIC_FEED_SOURCES)
     p5 = 0
     if anti_top.is_sleeper_revival:
-        # Koin berusia >= 12 jam / beberapa hari yang baru bangun sebelum ATH mendapat skor penuh!
         p5 += 5
         age_days = anti_top.age_minutes / 1440.0
         age_str = f"{age_days:.1f}hri" if age_days >= 1.0 else f"{anti_top.age_minutes / 60.0:.0f}j"
         p5_summary = (
             f"SLEEPER REVIVAL ({age_str} · Vol x{anti_top.vol_wake_5m_ratio:.1f}) · "
-            f"{len(pair.feed_sources)} feed"
+            f"{organic_feeds_count} organik"
         )
     else:
-        if anti_top.age_minutes <= 60.0:
+        if anti_top.age_minutes <= 90.0:
             p5 += 5
         elif anti_top.age_minutes <= 360.0:
-            p5 += 3
+            p5 += 4
         else:
-            p5 += 1
-        p5_summary = f"Usia {anti_top.age_minutes:.0f}m · {len(pair.feed_sources)} feed"
-    p5 += min(5, len(pair.feed_sources) * 2 + 1)
+            p5 += 2
+        p5_summary = f"Usia {anti_top.age_minutes:.0f}m · {organic_feeds_count} feed organik"
+    # Hanya feed organik yang mendapat poin penuh (koin paid-boost tidak diberi bonus artifisial)
+    p5 += min(5, organic_feeds_count * 2 + (1 if organic_feeds_count > 0 else 0))
 
     pillars = (
-        PillarScore("Keamanan & Pareto", p1, 25, security.pareto_status),
+        PillarScore("Keamanan & Pareto", p1, 25, f"{security.pareto_status} · {security.total_holders:,}H"),
         PillarScore("Koridor & Headroom", p2, 25, f"Net +{anti_top.net_headroom_pct:.1f}%"),
-        PillarScore("Orderflow & Momentum", p3, 20, f"5m {anti_top.p_m5:+.1f}% · Buy {anti_top.buy_ratio_5m_pct:.0f}%"),
+        PillarScore(
+            "Demand & Momentum",
+            p3,
+            20,
+            f"5m {anti_top.p_m5:+.1f}% · Turn {anti_top.turnover_h1_ratio:.2f}x",
+        ),
         PillarScore("Likuiditas & Jupiter", p4, 20, execution.status),
         PillarScore("Kesegaran / Revival & Feed", p5, 10, p5_summary),
     )

@@ -40,12 +40,14 @@ def format_entry_alert(audit: AuditResult) -> str:
         f"• Spot MC: <b>${at.spot_mc:,.0f}</b> → Proyeksi (+delay): <b>${at.projected_entry_mc:,.0f}</b>",
         f"• Koridor: {_esc(at.corridor_label)} (Headroom <b>+{at.net_headroom_pct:.1f}%</b>)",
         f"• 5m / 1h / 6h / 24h: <code>{at.p_m5:+.1f}%</code> / <code>{at.p_h1:+.1f}%</code> / <code>{at.p_h6:+.1f}%</code> / <code>{at.p_h24:+.1f}%</code>",
+        f"• Demand: Vol5m <b>${p.vol_m5:,.0f}</b> (${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> (<b>{at.turnover_h1_ratio:.2f}x</b> MC)"
+        + (" · 🐋 <b>Whale Absorption</b>" if at.whale_absorption else ""),
         f"• LP: <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.0f}% MC)" + (
             f" | Wake-Up Vol: <b>x{at.vol_wake_5m_ratio:.1f}</b> (1h {at.vol_h1_share_24h_pct:.0f}% dr 24h)"
             if at.is_sleeper_revival
             else ""
         ),
-        f"• Pareto: Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code> · Dev <code>{sec.dev_pct}%</code>",
+        f"• Holder: <b>{sec.total_holders:,}</b> · Pareto Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code> · Dev <code>{sec.dev_pct}%</code>",
         f"• Jupiter: 0.1S <code>-{ex.round_trip_loss_01_sol_pct}%</code> | 1.0S <code>-{ex.depth_loss_1_sol_pct}%</code>",
     ]
     if plan:

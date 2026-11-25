@@ -75,6 +75,7 @@ class SecurityResult:
     lp_locked_usd: Optional[float]
     is_meteora_nft_lp: bool
     pareto_status: str
+    total_holders: int = 0
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,9 @@ class AntiTopResult:
     is_sleeper_revival: bool = False
     vol_wake_5m_ratio: float = 0.0
     vol_h1_share_24h_pct: float = 0.0
+    avg_ticket_5m_usd: float = 0.0
+    turnover_h1_ratio: float = 0.0
+    whale_absorption: bool = False
 
 
 @dataclass(frozen=True)

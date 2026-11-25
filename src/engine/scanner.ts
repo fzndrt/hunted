@@ -177,43 +177,46 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   const cfg: ScanConfig = { ...DEFAULT_SCAN_CONFIG, ...(partialCfg ?? {}) };
   const feedNotes: string[] = [];
 
-  // 1. Parallel Discovery from 8 high-signal Solana feeds (Fresh + Pre-ATH Sleeper Revival 1h & Top Boosts)
-  const [gt5m, gt1h, gtNew, dsPump, dsRay, dsProfiles, dsBoosts, dsBoostsTop] = await Promise.all([
-    fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
+  // 1. Staggered GeckoTerminal (anti-429) + Parallel Organic DexScreener Feeds
+  const fetchGeckoStaggered = async () => {
+    const gt5m = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1',
-      3500
-    ),
-    fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
+      4000
+    );
+    await new Promise((r) => setTimeout(r, 750));
+    const gt1h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
-      3500
-    ),
-    fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
-      'https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1',
-      3500
-    ),
+      4000
+    );
+    return [gt5m, gt1h] as const;
+  };
+
+  const [[gt5m, gt1h], dsPump, dsRay, dsCto, dsBoostsTop] = await Promise.all([
+    fetchGeckoStaggered(),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
       'https://api.dexscreener.com/latest/dex/search?q=pumpswap',
-      3500
+      4000
     ),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
       'https://api.dexscreener.com/latest/dex/search?q=raydium',
-      3500
+      4000
     ),
     fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
-      'https://api.dexscreener.com/token-profiles/latest/v1',
-      3500
-    ),
-    fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
-      'https://api.dexscreener.com/token-boosts/latest/v1',
-      3500
+      'https://api.dexscreener.com/community-takeovers/latest/v1',
+      4000
     ),
     fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
       'https://api.dexscreener.com/token-boosts/top/v1',
-      3500
+      4000
     ),
   ]);
 
-  const discoveredMints = new Set<string>();
+  const organicScoreByMint = new Map<string, number>();
+  const recordMint = (mint: string, weight: number) => {
+    if (isValidSolanaMint(mint) && !VERIFIED_HARD_QUOTE_MINTS[mint]) {
+      organicScoreByMint.set(mint, (organicScoreByMint.get(mint) ?? 0) + weight);
+    }
+  };
 
   const extractGtMints = (payload: { data?: Array<Record<string, unknown>> } | null, label: string) => {
     if (!payload?.data) {
@@ -227,7 +230,7 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
       if (typeof rel === 'string' && rel.startsWith('solana_')) {
         const mint = rel.slice('solana_'.length);
         if (isValidSolanaMint(mint) && !VERIFIED_HARD_QUOTE_MINTS[mint]) {
-          discoveredMints.add(mint);
+          recordMint(mint, 3);
           added++;
         }
       }
@@ -237,7 +240,6 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
 
   extractGtMints(gt5m, 'GeckoTerminal 5m Trending');
   extractGtMints(gt1h, 'GeckoTerminal 1h Revival');
-  extractGtMints(gtNew, 'GeckoTerminal New Pools');
 
   for (const [searchPayload, label] of [
     [dsPump, 'DexScreener PumpSwap'],
@@ -249,33 +251,35 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
       if (String(p.chainId ?? '').toLowerCase() !== 'solana') continue;
       const mint = String(p.baseToken?.address ?? '').trim();
       if (isValidSolanaMint(mint) && !VERIFIED_HARD_QUOTE_MINTS[mint]) {
-        discoveredMints.add(mint);
+        recordMint(mint, 2);
         added++;
       }
     }
     feedNotes.push(`${label}: ${added} mints`);
   }
 
-  for (const [arr, label] of [
-    [dsProfiles, 'DexScreener Profiles'],
-    [dsBoosts, 'DexScreener Boosts'],
-    [dsBoostsTop, 'DexScreener Top Boosts'],
+  for (const [arr, label, weight] of [
+    [dsCto, 'DexScreener CTO', 2],
+    [dsBoostsTop, 'DexScreener Top Boosts', 1],
   ] as const) {
     if (!Array.isArray(arr)) continue;
     let added = 0;
-    for (const item of arr) {
+    for (const item of arr.slice(0, 25)) {
       if (String(item.chainId ?? '').toLowerCase() !== 'solana') continue;
       const mint = String(item.tokenAddress ?? '').trim();
       if (isValidSolanaMint(mint) && !VERIFIED_HARD_QUOTE_MINTS[mint]) {
-        discoveredMints.add(mint);
+        recordMint(mint, weight);
         added++;
       }
     }
     feedNotes.push(`${label}: ${added} mints`);
   }
 
-  // 2. Batch-fetch live market data from DexScreener in chunks of 30 (max 60 candidates)
-  const mintList = Array.from(discoveredMints).slice(0, 60);
+  // 2. Batch-fetch live market data prioritizing organic trending mints first (max 60 candidates)
+  const mintList = Array.from(organicScoreByMint.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([m]) => m)
+    .slice(0, 60);
   const chunks: string[][] = [];
   for (let i = 0; i < mintList.length; i += 30) {
     chunks.push(mintList.slice(i, i + 30));

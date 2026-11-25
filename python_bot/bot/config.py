@@ -57,6 +57,17 @@ ALLOWED_EXTERNAL_HOSTS: frozenset[str] = frozenset(
 )
 
 
+ORGANIC_FEED_SOURCES: frozenset[str] = frozenset(
+    {
+        "gecko_trending_5m",
+        "gecko_trending_1h",
+        "dex_pumpswap",
+        "dex_raydium",
+        "dex_community_takeovers",
+    }
+)
+
+
 @dataclass(frozen=True)
 class EntryCorridor:
     corridor_id: str
@@ -72,33 +83,33 @@ class EntryCorridor:
 ENTRY_CORRIDORS: tuple[EntryCorridor, ...] = (
     EntryCorridor(
         corridor_id="CORRIDOR_A_EARLY",
-        label="Corridor A (Early Ignition $22K–$78K)",
-        min_mc=22_000.0,
-        max_mc=78_000.0,
-        ceiling_mc=100_000.0,
-        default_hard_stop_pct=18.0,
-        default_tp1_pct=45.0,
-        default_tp2_pct=110.0,
+        label="Corridor A (Early Post-Migration $25K–$92K)",
+        min_mc=25_000.0,
+        max_mc=92_000.0,
+        ceiling_mc=125_000.0,
+        default_hard_stop_pct=16.0,
+        default_tp1_pct=35.0,
+        default_tp2_pct=85.0,
     ),
     EntryCorridor(
         corridor_id="CORRIDOR_B_POST100K",
-        label="Corridor B (Post-100K Breakout $112K–$172K)",
-        min_mc=112_000.0,
-        max_mc=172_000.0,
-        ceiling_mc=200_000.0,
+        label="Corridor B (Momentum Breakout $92K–$210K)",
+        min_mc=92_000.0,
+        max_mc=210_000.0,
+        ceiling_mc=300_000.0,
         default_hard_stop_pct=15.0,
-        default_tp1_pct=40.0,
-        default_tp2_pct=90.0,
+        default_tp1_pct=35.0,
+        default_tp2_pct=80.0,
     ),
     EntryCorridor(
         corridor_id="CORRIDOR_C_EXPANSION",
-        label="Corridor C (Mid Expansion $220K–$335K)",
-        min_mc=220_000.0,
-        max_mc=335_000.0,
-        ceiling_mc=450_000.0,
+        label="Corridor C (Expansion Runner $210K–$390K)",
+        min_mc=210_000.0,
+        max_mc=390_000.0,
+        ceiling_mc=560_000.0,
         default_hard_stop_pct=14.0,
-        default_tp1_pct=35.0,
-        default_tp2_pct=75.0,
+        default_tp1_pct=30.0,
+        default_tp2_pct=65.0,
     ),
 )
 
@@ -151,10 +162,13 @@ class BotConfig:
     min_score: int = 72
     max_round_trip_loss_pct: float = 4.5
     max_depth_cliff_loss_pct: float = 13.5
-    min_net_headroom_pct: float = 20.0
+    min_net_headroom_pct: float = 18.0
     max_m5_change_pct: float = 28.0
-    max_h1_change_pct: float = 145.0
+    max_h1_change_pct: float = 240.0
     min_liquidity_usd: float = 12_000.0
+    min_vol_m5_usd: float = 2_000.0
+    min_vol_h1_usd: float = 15_000.0
+    min_turnover_h1_ratio: float = 0.25
     include_midcap_corridor: bool = True
 
     enable_pumpportal_stream: bool = False
@@ -203,10 +217,13 @@ class BotConfig:
             min_score=_env_int("MIN_SCORE", 72, 40, 95),
             max_round_trip_loss_pct=_env_float("MAX_ROUND_TRIP_LOSS_PCT", 4.5, 1.5, 12.0),
             max_depth_cliff_loss_pct=_env_float("MAX_DEPTH_CLIFF_LOSS_PCT", 13.5, 4.0, 25.0),
-            min_net_headroom_pct=_env_float("MIN_NET_HEADROOM_PCT", 20.0, 8.0, 60.0),
+            min_net_headroom_pct=_env_float("MIN_NET_HEADROOM_PCT", 18.0, 8.0, 60.0),
             max_m5_change_pct=_env_float("MAX_M5_CHANGE_PCT", 28.0, 8.0, 60.0),
-            max_h1_change_pct=_env_float("MAX_H1_CHANGE_PCT", 145.0, 40.0, 400.0),
+            max_h1_change_pct=_env_float("MAX_H1_CHANGE_PCT", 240.0, 40.0, 500.0),
             min_liquidity_usd=_env_float("MIN_LIQUIDITY_USD", 12_000.0, 5_000.0, 250_000.0),
+            min_vol_m5_usd=_env_float("MIN_VOL_M5_USD", 2_000.0, 500.0, 100_000.0),
+            min_vol_h1_usd=_env_float("MIN_VOL_H1_USD", 15_000.0, 2_000.0, 500_000.0),
+            min_turnover_h1_ratio=_env_float("MIN_TURNOVER_H1_RATIO", 0.25, 0.05, 5.0),
             include_midcap_corridor=_env_bool("INCLUDE_MIDCAP_CORRIDOR", True),
             enable_pumpportal_stream=_env_bool("ENABLE_PUMPPORTAL_STREAM", False),
             pumpportal_min_sol_trade=_env_float("PUMPPORTAL_MIN_SOL_TRADE", 3.0, 0.5, 100.0),

@@ -386,15 +386,20 @@ export function evaluateSecurityLayer(
   const outsidePoolPct = Math.max(0, 100 - poolHoldingsPct);
   const totalHolders = asNum(rug.totalHolders, 0);
 
-  // Pool-depletion aware Pareto ceiling (allows up to 24.5% only when >80% outside pool & >1000 holders)
+  const rugScoreVal = typeof rug.score_normalised === 'number' ? rug.score_normalised : rug.score ?? null;
+  const maxSingleAllowed =
+    totalHolders >= 2000 && insiderHoldersCount === 0 && (rugScoreVal === null || rugScoreVal <= 15)
+      ? 8.0
+      : 6.5;
   const top10Ceiling =
-    outsidePoolPct >= 80 && totalHolders >= 1000 && insiderHoldersCount === 0 && maxSinglePurePct <= 4.0
-      ? Math.min(24.5, outsidePoolPct * 0.275)
-      : 21.0;
+    outsidePoolPct >= 80 && totalHolders >= 1000 && insiderHoldersCount === 0 && maxSinglePurePct <= 6.5
+      ? Math.min(30.0, outsidePoolPct * 0.32)
+      : 28.0;
 
   const isNanoSwarm =
     outsidePoolPct >= 65 && (top10PurePct < 5.2 || maxSinglePurePct < 0.65 || (outsidePoolPct >= 70 && rank5PurePct < 0.45));
-  const isCabalConcentrated = top10PurePct > top10Ceiling || maxSinglePurePct > 4.5 || insiderHoldersCount >= 3;
+  const isCabalConcentrated =
+    top10PurePct > top10Ceiling || maxSinglePurePct > maxSingleAllowed || insiderHoldersCount >= 3;
   const holdersEnough = totalHolders === 0 || totalHolders >= minHoldersRequired;
 
   // Detect identical twin-wallet split clusters (>= 4 wallets within 0.015% of each other)
@@ -421,7 +426,7 @@ export function evaluateSecurityLayer(
     actual: `Top10: ${top10PurePct.toFixed(1)}% · Max: ${maxSinglePurePct.toFixed(2)}% · #5: ${rank5PurePct.toFixed(
       2
     )}% · Holders: ${totalHolders.toLocaleString()}`,
-    threshold: `Top10 <= ${top10Ceiling.toFixed(1)}% · Max <= 4.5% · Anti-Swarm · >= ${minHoldersRequired} holders`,
+    threshold: `Top10 <= ${top10Ceiling.toFixed(1)}% · Max <= ${maxSingleAllowed.toFixed(1)}% · Anti-Swarm · >= ${minHoldersRequired} holders`,
     detail: isNanoSwarm
       ? 'Pola Nano-Swarm terdeteksi: suplai luar pool besar tapi dipecah ke ratusan dompet bot mikro.'
       : isCabalConcentrated

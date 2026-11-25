@@ -153,21 +153,65 @@ def evaluate_security(
         )
     )
 
-    # 5. Creator / Dev Supply Cap (<= 2.5%)
-    creator = str(rugcheck_report.get("creator") or "")
+    # 5. Bangun daftar dinamis Vault/Pool AMM (KRITIS untuk PumpSwap & Meteora DLMM!)
+    # Di PumpSwap, setiap koin punya pubkey pool unik (memegang 8%–22% suplai) — WAJIB dikecualikan agar tidak dianggap Whale!
+    excluded_vaults: set[str] = set(KNOWN_PROTOCOL_AUTHORITIES)
+    if pair.pair_address:
+        excluded_vaults.add(pair.pair_address.strip())
+
+    known_accounts = rugcheck_report.get("knownAccounts") or {}
+    if isinstance(known_accounts, dict):
+        for acc_addr, meta in known_accounts.items():
+            if not isinstance(meta, dict):
+                continue
+            acc_type = str(meta.get("type") or "").strip().lower()
+            acc_name = str(meta.get("name") or "").strip().lower()
+            if acc_type in {"amm", "locker", "clob", "burn", "vault"} or any(
+                kw in acc_name for kw in ("amm", "pool", "locker", "burn", "stake")
+            ):
+                excluded_vaults.add(str(acc_addr).strip())
+
+    markets = rugcheck_report.get("markets") or []
+    best_lp_lock_pct = 0.0
+    best_lp_lock_usd = 0.0
+    is_meteora_nft_lp = False
+
+    for m in markets:
+        for key in ("pubkey", "liquidityA", "liquidityB", "mintLP"):
+            val = str(m.get(key) or "").strip()
+            if val:
+                excluded_vaults.add(val)
+        lp = m.get("lp") or {}
+        lp_mint = str(lp.get("lpMint") or "")
+        market_type = str(m.get("marketType") or "").lower()
+        if lp_mint == METEORA_NFT_LP_SENTINEL or "meteora" in market_type:
+            is_meteora_nft_lp = True
+        lock_pct = float(lp.get("lpLockedPct") or 0.0)
+        lock_usd = float(lp.get("lpLockedUSD") or 0.0)
+        if lock_pct > best_lp_lock_pct:
+            best_lp_lock_pct = lock_pct
+        if lock_usd > best_lp_lock_usd:
+            best_lp_lock_usd = lock_usd
+
+    # 6. Creator / Dev Supply Cap (<= 2.5%) & Holder Non-Protokol
+    creator = str(rugcheck_report.get("creator") or "").strip()
     top_holders = rugcheck_report.get("topHolders") or []
     dev_pct = 0.0
+    insider_count = 0
     non_protocol_holders: list[float] = []
     for h in top_holders:
-        owner = str(h.get("owner") or h.get("address") or "")
+        owner = str(h.get("owner") or "").strip()
+        addr = str(h.get("address") or "").strip()
         pct = float(h.get("pct") or 0.0)
         is_insider = bool(h.get("insider"))
-        if owner and creator and owner == creator:
+        if creator and (owner == creator or addr == creator):
             dev_pct = max(dev_pct, pct)
-        if owner in KNOWN_PROTOCOL_AUTHORITIES:
+        if (owner and owner in excluded_vaults) or (addr and addr in excluded_vaults):
             continue
-        if is_insider and not dev_pct:
-            dev_pct = max(dev_pct, pct)
+        if is_insider:
+            insider_count += 1
+            if not dev_pct:
+                dev_pct = max(dev_pct, pct)
         non_protocol_holders.append(pct)
 
     dev_ok = dev_pct <= 2.5
@@ -188,25 +232,7 @@ def evaluate_security(
         )
     )
 
-    # 6. LP Lock >= 80% OR >= $18K locked pool (with explicit Meteora NFT/DLMM awareness)
-    markets = rugcheck_report.get("markets") or []
-    best_lp_lock_pct = 0.0
-    best_lp_lock_usd = 0.0
-    is_meteora_nft_lp = False
-
-    for m in markets:
-        lp = m.get("lp") or {}
-        lp_mint = str(lp.get("lpMint") or "")
-        market_type = str(m.get("marketType") or "").lower()
-        if lp_mint == METEORA_NFT_LP_SENTINEL or "meteora" in market_type:
-            is_meteora_nft_lp = True
-        lock_pct = float(lp.get("lpLockedPct") or 0.0)
-        lock_usd = float(lp.get("lpLockedUSD") or 0.0)
-        if lock_pct > best_lp_lock_pct:
-            best_lp_lock_pct = lock_pct
-        if lock_usd > best_lp_lock_usd:
-            best_lp_lock_usd = lock_usd
-
+    # 7. LP Lock >= 80% OR >= $18K locked pool
     lp_ok = best_lp_lock_pct >= 80.0 or best_lp_lock_usd >= 18_000.0
     if lp_ok:
         lp_detail = (
@@ -234,7 +260,35 @@ def evaluate_security(
         )
     )
 
-    # 7. Pareto Conservation Law (Anti-Whale Concentration & Anti-Nano-Swarm/Cabal)
+    rc_score_raw = rugcheck_report.get("score_normalised")
+    if rc_score_raw is None:
+        rc_score_raw = rugcheck_report.get("score")
+    rc_score = int(rc_score_raw) if isinstance(rc_score_raw, (int, float)) else None
+
+    total_holders_raw = rugcheck_report.get("totalHolders")
+    total_holders = int(total_holders_raw) if isinstance(total_holders_raw, (int, float)) and total_holders_raw > 0 else 0
+
+    # 8. Minimum Organic Holder Depth (Anti-Koin Sepi yang Langsung Mati)
+    min_holders_req = 180 if pair.market_cap >= 100_000.0 else 95
+    holders_ok = (total_holders == 0) or (total_holders >= min_holders_req)
+    checks.append(
+        GateCheck(
+            id="organic_holders",
+            layer="SECURITY",
+            label="Basis Holder Organik (Anti-Koin Mati)",
+            passed=holders_ok,
+            severity="PASS" if holders_ok else "VETO",
+            actual=f"{total_holders:,} holders" if total_holders > 0 else "N/A",
+            threshold=f">= {min_holders_req} holders",
+            detail=(
+                f"Basis komunitas holder solid ({total_holders:,} dompet)."
+                if holders_ok
+                else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req}) — rawan sepi & mati."
+            ),
+        )
+    )
+
+    # 9. Pareto Conservation Law (Anti-Whale Concentration & Anti-Nano-Swarm/Cabal)
     non_protocol_holders.sort(reverse=True)
     top1_pct = non_protocol_holders[0] if non_protocol_holders else 0.0
     top10_pct = sum(non_protocol_holders[:10]) if non_protocol_holders else 0.0
@@ -246,13 +300,27 @@ def evaluate_security(
         and (top5[0] - top5[4]) < 0.35
         and sum(top5) >= 9.0
     )
-    pareto_ok = (top1_pct <= 6.0) and (top10_pct <= 30.0) and (not is_nano_swarm)
+    # Batas Top1 pintar: 6.5% default; hingga 8.0% khusus komunitas besar >= 2.000 holder bersih tanpa insider
+    max_top1_allowed = (
+        8.0
+        if (total_holders >= 2_000 and insider_count == 0 and (rc_score is not None and rc_score <= 15))
+        else 6.5
+    )
+    pareto_ok = (
+        (top1_pct <= max_top1_allowed)
+        and (top10_pct <= 30.0)
+        and (insider_count < 3)
+        and (not is_nano_swarm)
+    )
     if is_nano_swarm:
         pareto_status = "NANO_SWARM_DETECTED"
         pareto_detail = (
             f"DITOLAK: Pola Nano-Swarm/Cabal terdeteksi — Top 5 holder nyaris seragam ({top5[0]:.2f}%..{top5[4]:.2f}%)."
         )
-    elif top1_pct > 6.0 or top10_pct > 30.0:
+    elif insider_count >= 3:
+        pareto_status = "INSIDER_CLUSTER"
+        pareto_detail = f"DITOLAK: Terdeteksi {insider_count} dompet insider di Top Holders."
+    elif top1_pct > max_top1_allowed or top10_pct > 30.0:
         pareto_status = "WHALE_CONCENTRATED"
         pareto_detail = (
             f"DITOLAK: Konsentrasi holder terlalu tinggi (Top1={top1_pct:.2f}%, Top10={top10_pct:.2f}%)."
@@ -269,15 +337,10 @@ def evaluate_security(
             passed=pareto_ok,
             severity="PASS" if pareto_ok else "VETO",
             actual=f"Top1 {top1_pct:.2f}% · Top10 {top10_pct:.2f}%",
-            threshold="Top1 <= 6.0%, Top10 <= 30.0%, non-seragam",
+            threshold=f"Top1 <= {max_top1_allowed:.1f}%, Top10 <= 30.0%, non-seragam",
             detail=pareto_detail,
         )
     )
-
-    rc_score_raw = rugcheck_report.get("score_normalised")
-    if rc_score_raw is None:
-        rc_score_raw = rugcheck_report.get("score")
-    rc_score = int(rc_score_raw) if isinstance(rc_score_raw, (int, float)) else None
 
     all_passed = all(c.passed for c in checks)
     return SecurityResult(
@@ -292,4 +355,5 @@ def evaluate_security(
         lp_locked_usd=round(best_lp_lock_usd, 0),
         is_meteora_nft_lp=is_meteora_nft_lp,
         pareto_status=pareto_status,
+        total_holders=total_holders,
     )

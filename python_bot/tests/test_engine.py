@@ -60,6 +60,7 @@ def _clean_rugcheck() -> dict:
     return {
         "rugged": False,
         "score_normalised": 12,
+        "totalHolders": 420,
         "creator": "DevWallet1111111111111111111111111111111111",
         "token": {"mintAuthority": None, "freezeAuthority": None},
         "token_extensions": {},
@@ -109,7 +110,8 @@ def test_fresh_graduation_age_proportional_tx_threshold() -> None:
         sells_h1=8,
         buys_h24=14,
         sells_h24=8,
-        vol_h1=1500.0,
+        vol_m5=3_500.0,
+        vol_h1=16_000.0,
         pair_created_at_ms=now_ms - 4 * 60_000,
     )
     res = evaluate_anti_top(fresh_pair, BotConfig(), now_ms=now_ms)
@@ -216,9 +218,9 @@ def test_sleeper_revival_aged_token_pre_ath_gets_full_score_and_fast_tp1() -> No
         market_cap=48_000.0,
         liquidity_usd=18_000.0,
         vol_m5=3_200.0,
-        vol_h1=14_500.0,
-        vol_h6=18_000.0,
-        vol_h24=38_000.0,  # avg 5m = $131.9 -> vol_wake_5m_ratio = 24.2x, vol_h1_share = 38.2%
+        vol_h1=16_000.0,
+        vol_h6=20_000.0,
+        vol_h24=42_000.0,  # avg 5m = $145.8 -> vol_wake_5m_ratio = 21.9x, vol_h1_share = 38.1%
         buys_m5=18,
         sells_m5=9,
         buys_h1=65,
@@ -230,7 +232,7 @@ def test_sleeper_revival_aged_token_pre_ath_gets_full_score_and_fast_tp1() -> No
         price_change_h6=28.0,
         price_change_h24=35.0,
         pair_created_at_ms=now_ms - 4 * 24 * 60 * 60_000,  # usia 4 hari
-        feed_sources=("gecko_trending_1h", "dex_boosts_top"),
+        feed_sources=("gecko_trending_1h", "dex_pumpswap"),
     )
     sec = evaluate_security(aged_sleeper, _clean_rugcheck())
     at = evaluate_anti_top(aged_sleeper, cfg, now_ms=now_ms)
@@ -354,6 +356,106 @@ def test_alert_cooldown_release_and_upstash_fail_open() -> None:
         assert await up.should_send_alert("mintA", "ENTRY_READY", 30) is True
 
     asyncio.run(_run())
+
+
+def test_pumpswap_dynamic_amm_vault_excluded_via_known_accounts_and_markets() -> None:
+    """Reproduksi koin Holders: vault Pump Fun AMM (14.77% supply) tidak boleh diveto sebagai Whale."""
+    rc = _clean_rugcheck()
+    rc["totalHolders"] = 16_886
+    rc["markets"] = [
+        {
+            "marketType": "pump_fun_amm",
+            "pubkey": "LBgqGiqxPumpAmmPoolVault11111111111111111111",
+            "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 20700},
+        }
+    ]
+    rc["knownAccounts"] = {
+        "LBgqGiqxPumpAmmPoolVault11111111111111111111": {"name": "Pump Fun AMM", "type": "AMM"},
+    }
+    rc["topHolders"] = [
+        {"owner": "LBgqGiqxPumpAmmPoolVault11111111111111111111", "pct": 14.77},
+        {"owner": "HolderA11111111111111111111111111111111111", "pct": 4.10},
+        {"owner": "HolderB11111111111111111111111111111111111", "pct": 3.05},
+        {"owner": "HolderC11111111111111111111111111111111111", "pct": 2.20},
+        {"owner": "HolderD11111111111111111111111111111111111", "pct": 1.45},
+    ]
+    pair = _make_pair(market_cap=74_000.0, liquidity_usd=20_700.0)
+    res = evaluate_security(pair, rc)
+    assert res.passed, f"Expected PumpSwap AMM vault to be excluded, got: {[c.detail for c in res.checks if not c.passed]}"
+    assert res.top1_pct == 4.1
+    assert res.total_holders == 16_886
+
+
+def test_dead_coin_low_5m_velocity_is_hard_vetoed() -> None:
+    """Reproduksi koin mati (DUVAL): Vol5m $549 dan tren -6.6% 1h wajib kena HARD VETO."""
+    now_ms = 1_750_000_000_000
+    dead_pair = _make_pair(
+        market_cap=58_000.0,
+        liquidity_usd=19_000.0,
+        vol_m5=549.0,
+        vol_h1=4_200.0,
+        vol_h24=18_000.0,
+        buys_m5=4,
+        sells_m5=3,
+        price_change_m5=-2.1,
+        price_change_h1=-6.6,
+        pair_created_at_ms=now_ms - 45 * 60_000,
+    )
+    res = evaluate_anti_top(dead_pair, BotConfig(), now_ms=now_ms)
+    assert not res.passed
+    assert not res.wait_dip_only  # Harus HARD VETO, bukan WATCH_PULLBACK
+    assert any(c.id == "orderflow_quality" and not c.passed and "lemah" in c.detail for c in res.checks)
+
+
+def test_5m_wash_bot_tiny_ticket_is_hard_vetoed() -> None:
+    """Reproduksi wash-bot (DONJENSEN): 885 tx dalam 5 menit tapi volume cuma $1,901 ($2.15/tx) wajib VETO."""
+    now_ms = 1_750_000_000_000
+    wash_pair = _make_pair(
+        market_cap=65_000.0,
+        liquidity_usd=21_000.0,
+        vol_m5=1_901.0,
+        vol_h1=28_000.0,
+        vol_h24=52_000.0,
+        buys_m5=450,
+        sells_m5=435,
+        price_change_m5=4.0,
+        price_change_h1=15.0,
+        pair_created_at_ms=now_ms - 50 * 60_000,
+    )
+    res = evaluate_anti_top(wash_pair, BotConfig(), now_ms=now_ms)
+    assert not res.passed
+    assert not res.wait_dip_only
+    assert res.avg_ticket_5m_usd < 18.0
+    assert any(c.id == "orderflow_quality" and not c.passed and "wash-bot" in c.detail for c in res.checks)
+
+
+def test_whale_absorption_rising_price_passes_anti_top() -> None:
+    """Reproduksi koin 4CHAN/PERRO: 104B/119S (46.6% buy count) tapi harga +8.2% 5m & Vol5m besar = Whale Absorption."""
+    now_ms = 1_750_000_000_000
+    whale_pair = _make_pair(
+        market_cap=266_000.0,
+        liquidity_usd=39_000.0,
+        vol_m5=51_000.0,
+        vol_h1=420_000.0,
+        vol_h24=1_200_000.0,
+        buys_m5=104,
+        sells_m5=119,  # 46.6% buy tx count (banyak retail TP kecil, whale makan beli besar)
+        buys_h1=2400,
+        sells_h1=2111,  # 53.2% buy tx count 1h
+        buys_h24=5200,
+        sells_h24=4800,
+        price_change_m5=8.2,
+        price_change_h1=185.0,
+        price_change_h6=190.0,
+        price_change_h24=210.0,
+        pair_created_at_ms=now_ms - 3 * 60 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    res = evaluate_anti_top(whale_pair, BotConfig(), now_ms=now_ms)
+    assert res.passed, f"Expected Whale Absorption runner to pass, got: {[c.detail for c in res.checks if not c.passed]}"
+    assert res.whale_absorption is True
+    assert res.corridor_id == "CORRIDOR_C_EXPANSION"
+
 
 
 

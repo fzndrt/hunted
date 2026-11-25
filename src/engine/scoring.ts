@@ -48,7 +48,9 @@ export function computeScoreAndVerdict(
   const p1 = Math.round(clamp(headroomPts + earlyMcBonus, 0, 25));
 
   // Pillar 2: Organic Orderflow Quality (0–25)
-  const bsPts = clamp(((m.buySellRatioM5 - 1.0) / 1.8) * 11, 0, 11);
+  const rawBsPts = clamp(((m.buySellRatioM5 - 1.0) / 1.8) * 11, 0, 11);
+  const whaleAbsorption = m.pM5 >= 2.0 && m.buySellRatioM5 >= 0.72 && m.buySellRatioM5 < 1.05;
+  const bsPts = whaleAbsorption ? Math.max(rawBsPts, 7.5) : rawBsPts;
   const ticketPts = clamp((m.avgTicketM5Usd / 95) * 8, 0, 8);
   const accelPts = clamp(((m.volAccelRatio - 0.8) / 2.2) * 6, 0, 6);
   const p2 = Math.round(clamp(bsPts + ticketPts + accelPts, 0, 25));
@@ -58,11 +60,13 @@ export function computeScoreAndVerdict(
   if (security.source === 'RUGCHECK_LIVE') {
     const devPts = sm.creatorBalancePct <= 0.1 ? 6 : sm.creatorBalancePct <= 1.0 ? 4 : 2;
     const distPts =
-      sm.top10PurePct >= 6 && sm.top10PurePct <= 16
+      sm.top10PurePct >= 5 && sm.top10PurePct <= 18
         ? 8
-        : sm.top10PurePct <= 21
+        : sm.top10PurePct <= 26
         ? 5
-        : 1;
+        : sm.top10PurePct <= 30
+        ? 2
+        : 0;
     const holderPts = clamp((sm.totalHolders / 500) * 6, 0, 6);
     p3 = Math.round(clamp(devPts + distPts + holderPts, 0, 20));
   }
