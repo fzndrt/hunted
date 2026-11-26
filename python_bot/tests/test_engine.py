@@ -859,3 +859,234 @@ def test_weak_mediocre_launch_and_unqualified_corridor_d_are_hard_vetoed() -> No
     assert not sec_r.passed
     assert not sec_r.clean_viral_pareto
     assert sec_r.pareto_status == "WHALE_CONCENTRATED"
+
+
+def test_pair_hyper_viral_green_absorption_and_fasttrack_passes_v41() -> None:
+    """Replay forensik PAIR (32rBxcFj...pump): lolos di menit 17 (Fast-Track + 1m OHLCV) & menit 23 (Green Viral Absorption wick 59%)."""
+    from bot.scoring import score_and_finalize
+    from bot.structure import aggregate_1m_to_3m_candles, evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.003"},
+        {"outAmount": "98800000", "priceImpactPct": "0.004"},
+        {"outAmount": "10000000", "priceImpactPct": "0.015"},
+        {"outAmount": "955000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+    pair_rc = _clean_rugcheck()
+    pair_rc["score_normalised"] = 1
+    pair_rc["totalHolders"] = 1_972
+    pair_rc["markets"] = [
+        {
+            "marketType": "pump_fun_amm",
+            "pubkey": "qkiYfkcm2QGfpNbEpuXvA5wiXq4F6ZdUWnZk2Y19cym",
+            "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 26_786, "baseUSD": 13_400, "quoteUSD": 13_400},
+        }
+    ]
+    pair_rc["topHolders"] = [
+        {"owner": "qkiYfkcm2QGfpNbEpuXvA5wiXq4F6ZdUWnZk2Y19cym", "pct": 9.99},
+        {"owner": "HolderP1111111111111111111111111111111111111", "pct": 4.37},
+        {"owner": "HolderP2111111111111111111111111111111111111", "pct": 2.40},
+        {"owner": "HolderP3111111111111111111111111111111111111", "pct": 2.36},
+        {"owner": "HolderP4111111111111111111111111111111111111", "pct": 2.27},
+        {"owner": "HolderP5111111111111111111111111111111111111", "pct": 1.96},
+    ]
+
+    # --- KASUS A: PAIR pada menit ke-23 (5 candle 5m HIJAU beruntun, wick 55-59%, GreenVol 85%, Vol5m $72.9K) ---
+    pair_23m = _make_pair(
+        mint="32rBxcFjCFnyqZ41CEPM5AL67X1dcw8w83vZt6Kxpump",
+        pair_address="qkiYfkcm2QGfpNbEpuXvA5wiXq4F6ZdUWnZk2Y19cym",
+        symbol="PAIR",
+        name="Paircoin",
+        market_cap=128_731.0,
+        liquidity_usd=25_984.0,
+        vol_m5=72_920.0,
+        vol_h1=363_250.0,
+        vol_h24=363_250.0,
+        buys_m5=1_060,
+        sells_m5=800,
+        buys_h1=5_543,
+        sells_h1=4_215,
+        buys_h24=5_543,
+        sells_h24=4_215,
+        price_change_m5=-0.8,
+        price_change_h1=351.0,
+        price_change_h24=351.0,
+        pair_created_at_ms=now_ms - 23 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_token_profiles"),
+    )
+    pair_candles_5m = [
+        [1, 0.0000282, 0.0000528, 0.0000173, 0.0000493, 48_826],
+        [2, 0.0000493, 0.0001135, 0.0000450, 0.0000682, 102_114],
+        [3, 0.0000682, 0.0001293, 0.0000582, 0.0001125, 77_341],
+        [4, 0.0001125, 0.0001608, 0.0000994, 0.0001265, 142_239],  # HIJAU +12.5%, wick 56%
+        [5, 0.0001265, 0.0001549, 0.0001131, 0.0001326, 28_318],   # HIJAU +4.8%, wick 53%
+    ]
+    sec23 = evaluate_security(pair_23m, pair_rc, now_ms=now_ms)
+    at23 = evaluate_anti_top(pair_23m, cfg, now_ms=now_ms)
+    st23 = evaluate_candle_structure(pair_23m, at23, pair_candles_5m, [], cfg)
+    audit23 = score_and_finalize(pair_23m, sec23, at23, exec_ok, cfg, structure=st23)
+    assert sec23.passed
+    assert at23.passed and at23.is_viral_velocity
+    assert st23.passed, f"PAIR 23m green viral absorption should pass, got: {[c.detail for c in st23.checks if not c.passed]}"
+    assert audit23.verdict == "ENTRY_READY"
+
+    # --- KASUS B: PAIR pada menit ke-15 (Hyper-Viral Fast-Track 12-19m + agregasi candle 1m->3m) ---
+    pair_15m = _make_pair(
+        mint="32rBxcFjCFnyqZ41CEPM5AL67X1dcw8w83vZt6Kxpump",
+        pair_address="qkiYfkcm2QGfpNbEpuXvA5wiXq4F6ZdUWnZk2Y19cym",
+        symbol="PAIR",
+        name="Paircoin",
+        market_cap=115_000.0,
+        liquidity_usd=24_500.0,
+        vol_m5=68_000.0,
+        vol_h1=240_000.0,
+        vol_h24=240_000.0,
+        buys_m5=950,
+        sells_m5=720,
+        buys_h1=3_800,
+        sells_h1=2_900,
+        buys_h24=3_800,
+        sells_h24=2_900,
+        price_change_m5=12.0,
+        price_change_h1=310.0,
+        price_change_h24=310.0,
+        pair_created_at_ms=now_ms - 15 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_token_profiles"),
+    )
+    candles_1m = [
+        [i, 0.000023 + i * 0.000006, 0.000026 + i * 0.0000065, 0.000022 + i * 0.0000058, 0.000025 + i * 0.0000062, 16_000]
+        for i in range(15)
+    ]
+    synth_3m = aggregate_1m_to_3m_candles(candles_1m)
+    assert len(synth_3m) == 5
+
+    at15 = evaluate_anti_top(pair_15m, cfg, now_ms=now_ms)
+    sec15 = evaluate_security(pair_15m, pair_rc, now_ms=now_ms, require_hyper_viral_holders=at15.is_hyper_viral_fasttrack)
+    st15 = evaluate_candle_structure(pair_15m, at15, synth_3m, [], cfg)
+    audit15 = score_and_finalize(pair_15m, sec15, at15, exec_ok, cfg, structure=st15)
+    assert at15.passed and at15.is_hyper_viral_fasttrack
+    assert sec15.passed
+    assert st15.passed
+    assert audit15.verdict == "ENTRY_READY"
+
+    # Pastikan koin < 20m yang holder sedikit (300H) DITOLAK di Layer 1 meski lolos Fast-Track L2A
+    low_h_rc = dict(pair_rc)
+    low_h_rc["totalHolders"] = 300
+    sec_low = evaluate_security(pair_15m, low_h_rc, now_ms=now_ms, require_hyper_viral_holders=True)
+    assert not sec_low.passed
+
+
+def test_duk_steady_organic_climber_and_partial_candle_fix_passes_v41() -> None:
+    """Replay forensik duk (DG2EJSEt...pump): Steady Organic Climber ($6.9K/5m, $109K/1h) & partial candle terakhir tidak salah VETO."""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.018"},
+        {"outAmount": "950000000", "priceImpactPct": "0.020"},
+        cfg,
+    )
+    duk_pair = _make_pair(
+        mint="DG2EJSEtPBge5F7zBCTZG78p27LTCiq8tUkJ39qupump",
+        pair_address="4XVReVDHQDFUM6FfvTmo7FdmEq7ZGWxZ1Jhj7qVA68wx",
+        symbol="duk",
+        name="duk",
+        market_cap=119_887.0,
+        liquidity_usd=27_151.0,
+        vol_m5=6_982.0,
+        vol_h1=109_288.0,
+        vol_h6=199_026.0,
+        vol_h24=199_026.0,
+        buys_m5=76,
+        sells_m5=58,
+        buys_h1=1_620,
+        sells_h1=1_151,
+        buys_h6=2_200,
+        sells_h6=1_580,
+        buys_h24=2_200,
+        sells_h24=1_580,
+        price_change_m5=8.0,
+        price_change_h1=156.0,
+        price_change_h6=326.0,
+        price_change_h24=326.0,
+        pair_created_at_ms=now_ms - 220 * 60_000,
+        feed_sources=("watchlist_rescan", "gecko_trending_5m_p2"),
+    )
+    duk_rc = _clean_rugcheck()
+    duk_rc["score_normalised"] = 1
+    duk_rc["totalHolders"] = 1_281
+    duk_rc["markets"] = [
+        {
+            "marketType": "pump_fun_amm",
+            "pubkey": "4XVReVDHQDFUM6FfvTmo7FdmEq7ZGWxZ1Jhj7qVA68wx",
+            "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 26_685},
+        }
+    ]
+    # Data candle 5m asli duk: candle terakhir baru jalan 2 menit (Vol=$1,871 << pair.vol_m5 $6,982)!
+    duk_candles_5m = [
+        [1, 0.0000390, 0.0000579, 0.0000324, 0.0000556, 7_871],
+        [2, 0.0000556, 0.0001008, 0.0000487, 0.0000932, 13_246],
+        [3, 0.0000932, 0.0001195, 0.0000783, 0.0001010, 26_975],
+        [4, 0.0001010, 0.0001116, 0.0000896, 0.0000974, 15_528],
+        [5, 0.0000974, 0.0001184, 0.0000833, 0.0000888, 11_092],
+        [6, 0.0000888, 0.0000925, 0.0000775, 0.0000816, 7_226],
+        [7, 0.0000816, 0.0000907, 0.0000765, 0.0000778, 5_478],
+        [8, 0.0000778, 0.0000978, 0.0000776, 0.0000917, 2_971],
+        [9, 0.0000917, 0.0001146, 0.0000903, 0.0001115, 3_693],
+        [10, 0.0001115, 0.0001231, 0.0001100, 0.0001205, 1_871],  # Partial candle 2 menit!
+    ]
+    at_d = evaluate_anti_top(duk_pair, cfg, now_ms=now_ms)
+    sec_d = evaluate_security(duk_pair, duk_rc, now_ms=now_ms, require_steady_climber_holders=at_d.is_steady_organic_climber)
+    st_d = evaluate_candle_structure(duk_pair, at_d, duk_candles_5m, [], cfg)
+    audit_d = score_and_finalize(duk_pair, sec_d, at_d, exec_ok, cfg, structure=st_d)
+
+    assert at_d.passed and at_d.is_steady_organic_climber, f"duk L2A failed: {[c.detail for c in at_d.checks if not c.passed]}"
+    assert sec_d.passed
+    assert st_d.passed, f"duk L2B failed (partial candle bug?): {[c.detail for c in st_d.checks if not c.passed]}"
+    assert audit_d.verdict == "ENTRY_READY"
+
+
+def test_watchlist_auto_rescan_persistence_sqlite_and_upstash() -> None:
+    """Verifikasi Watchlist Auto-Rescan (simpan, list, auto-prune kedaluwarsa, hapus) di SQLite & Upstash."""
+    import time as _time
+    from bot.storage import UpstashExitGuardStore
+
+    async def _run() -> None:
+        m1 = "DG2EJSEtPBge5F7zBCTZG78p27LTCiq8tUkJ39qupump"
+        m2 = "32rBxcFjCFnyqZ41CEPM5AL67X1dcw8w83vZt6Kxpump"
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExitGuardStore(os.path.join(tmp, "wl.db"))
+            await store.add_watchlist_mint(m1, ttl_minutes=120)
+            await store.add_watchlist_mint(m2, ttl_minutes=120)
+            listed = await store.list_watchlist_mints(limit=15)
+            assert set(listed) == {m1, m2}
+            await store.remove_watchlist_mint(m1)
+            assert await store.list_watchlist_mints(limit=15) == [m2]
+
+        # Simulasi Upstash Redis HGETALL dengan 1 mint aktif + 1 mint kedaluwarsa
+        up = UpstashExitGuardStore("https://demo-redis.upstash.io", "token-xyz")
+        future_exp = str(int(_time.time()) + 3600)
+        past_exp = str(int(_time.time()) - 60)
+        deleted_keys: list[str] = []
+
+        async def _fake_cmd(*args):
+            if args[0] == "HGETALL":
+                return (True, [m1, future_exp, m2, past_exp])
+            if args[0] == "HDEL":
+                deleted_keys.extend(args[2:])
+                return (True, 1)
+            return (True, 1)
+
+        up._cmd_with_status = _fake_cmd  # type: ignore[method-assign]
+        active = await up.list_watchlist_mints(limit=15)
+        assert active == [m1]
+        assert deleted_keys == [m2]
+
+    asyncio.run(_run())

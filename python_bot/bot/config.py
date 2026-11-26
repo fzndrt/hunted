@@ -59,12 +59,15 @@ ALLOWED_EXTERNAL_HOSTS: frozenset[str] = frozenset(
 
 ORGANIC_FEED_SOURCES: frozenset[str] = frozenset(
     {
+        "watchlist_rescan",
         "gecko_trending_5m",
+        "gecko_trending_5m_p2",
         "gecko_trending_1h",
         "gecko_trending_6h",
         "dex_pumpswap",
         "dex_raydium",
         "dex_community_takeovers",
+        "dex_token_profiles",
     }
 )
 

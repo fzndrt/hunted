@@ -129,6 +129,8 @@ class AntiTopResult:
     is_viral_velocity: bool = False
     is_pullback_contraction_ok: bool = False
     is_corridor_d_viral_base: bool = False
+    is_hyper_viral_fasttrack: bool = False
+    is_steady_organic_climber: bool = False
 
 
 @dataclass(frozen=True)

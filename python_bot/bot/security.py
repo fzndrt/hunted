@@ -42,6 +42,8 @@ def evaluate_security(
     pair: PairSnapshot,
     rugcheck_report: Optional[dict[str, Any]],
     now_ms: Optional[int] = None,
+    require_hyper_viral_holders: bool = False,
+    require_steady_climber_holders: bool = False,
 ) -> SecurityResult:
     checks: list[GateCheck] = []
 
@@ -284,15 +286,29 @@ def evaluate_security(
         age_min = 60.0
     holders_per_min = round(total_holders / age_min, 2) if total_holders > 0 else 0.0
 
-    # 8. Minimum Organic Holder Depth (Dinaikkan di v4 agar koin sepi/cabal langsung terblokir!)
+    # 8. Minimum Organic Holder Depth (v4.1: Fast-Track Hyper-Viral 12–19m wajib >= 750 holders & 0 risk!)
     if pair.market_cap >= 390_000.0:
         min_holders_req = 1_500
+    elif require_hyper_viral_holders:
+        min_holders_req = 750
+    elif require_steady_climber_holders:
+        min_holders_req = 400
     elif pair.market_cap >= 100_000.0:
         min_holders_req = 280
     else:
         min_holders_req = 220
 
-    holders_ok = (total_holders == 0) or (total_holders >= min_holders_req)
+    warn_or_danger_risks_early = sum(
+        1
+        for r in risks
+        if str(r.get("level", "")).lower() in {"danger", "error", "critical", "warn"}
+    )
+    fasttrack_clean_ok = (not require_hyper_viral_holders) or (
+        total_holders >= 750 and warn_or_danger_risks_early == 0 and dev_pct <= 0.05
+    )
+    holders_ok = ((total_holders == 0) and not require_hyper_viral_holders) or (
+        total_holders >= min_holders_req and fasttrack_clean_ok
+    )
     checks.append(
         GateCheck(
             id="organic_holders",
@@ -305,11 +321,19 @@ def evaluate_security(
                 if total_holders > 0
                 else "N/A"
             ),
-            threshold=f">= {min_holders_req:,} holders",
+            threshold=(
+                f">= {min_holders_req:,} holders & 0 risks (Hyper-Viral Fast-Track)"
+                if require_hyper_viral_holders
+                else f">= {min_holders_req:,} holders"
+            ),
             detail=(
                 f"Basis komunitas holder solid ({total_holders:,} dompet, {holders_per_min:.1f} holder/menit)."
                 if holders_ok
-                else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req:,}) — rawan sepi & langsung mati."
+                else (
+                    f"DITOLAK (Fast-Track < 20m): Wajib >= 750 holders & 0 risks (aktual {total_holders:,}H, {warn_or_danger_risks_early} risk)."
+                    if require_hyper_viral_holders
+                    else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req:,}) — rawan sepi & langsung mati."
+                )
             ),
         )
     )

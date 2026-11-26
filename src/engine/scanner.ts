@@ -177,26 +177,31 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   const cfg: ScanConfig = { ...DEFAULT_SCAN_CONFIG, ...(partialCfg ?? {}) };
   const feedNotes: string[] = [];
 
-  // 1. Staggered GeckoTerminal 5m/1h/6h (anti-429) + Parallel Organic DexScreener Feeds
+  // 1. Staggered GeckoTerminal 5m (p1+p2)/1h/6h (anti-429) + Parallel Organic DexScreener Feeds (9 Feeds)
   const fetchGeckoStaggered = async () => {
     const gt5m = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1',
       4000
     );
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, 550));
+    const gt5mP2 = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
+      'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2',
+      4000
+    );
+    await new Promise((r) => setTimeout(r, 550));
     const gt1h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
       4000
     );
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, 550));
     const gt6h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
       4000
     );
-    return [gt5m, gt1h, gt6h] as const;
+    return [gt5m, gt5mP2, gt1h, gt6h] as const;
   };
 
-  const [[gt5m, gt1h, gt6h], dsPump, dsRay, dsCto, dsBoostsTop] = await Promise.all([
+  const [[gt5m, gt5mP2, gt1h, gt6h], dsPump, dsRay, dsCto, dsProfiles, dsBoostsTop] = await Promise.all([
     fetchGeckoStaggered(),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
       'https://api.dexscreener.com/latest/dex/search?q=pumpswap',
@@ -208,6 +213,10 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
     ),
     fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
       'https://api.dexscreener.com/community-takeovers/latest/v1',
+      4000
+    ),
+    fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
+      'https://api.dexscreener.com/token-profiles/latest/v1',
       4000
     ),
     fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
@@ -244,6 +253,7 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   };
 
   extractGtMints(gt5m, 'GeckoTerminal 5m Trending');
+  extractGtMints(gt5mP2, 'GeckoTerminal 5m Page 2');
   extractGtMints(gt1h, 'GeckoTerminal 1h Revival');
   extractGtMints(gt6h, 'GeckoTerminal 6h Daily Consolidation');
 
@@ -266,6 +276,7 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
 
   for (const [arr, label, weight] of [
     [dsCto, 'DexScreener CTO', 2],
+    [dsProfiles, 'DexScreener Token Profiles', 2],
     [dsBoostsTop, 'DexScreener Top Boosts', 1],
   ] as const) {
     if (!Array.isArray(arr)) continue;
@@ -281,11 +292,11 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
     feedNotes.push(`${label}: ${added} mints`);
   }
 
-  // 2. Batch-fetch live market data prioritizing organic trending mints first (max 60 candidates)
+  // 2. Batch-fetch live market data prioritizing organic trending mints first (max 75 candidates)
   const mintList = Array.from(organicScoreByMint.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([m]) => m)
-    .slice(0, 60);
+    .slice(0, 75);
   const chunks: string[][] = [];
   for (let i = 0; i < mintList.length; i += 30) {
     chunks.push(mintList.slice(i, i + 30));

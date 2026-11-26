@@ -90,6 +90,16 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const isViralVelocity =
     (volM5 >= 15_000 && volH1 >= 120_000 && turnoverH1Ratio >= 0.7) ||
     (volM5 >= 25_000 && volH1 >= 180_000 && turnoverH1Ratio >= 0.5);
+  const isHyperViralFastTrack =
+    ageMinutes >= 12 &&
+    ageMinutes < 20 &&
+    volM5 >= 35_000 &&
+    volH1 >= 150_000 &&
+    turnoverH1Ratio >= 1.2 &&
+    liqUsd >= 20_000 &&
+    buyRatio1hPctEarly >= 52.0 &&
+    buyRatio5mPctEarly >= 48.0 &&
+    totalTxH1 >= 600;
   const isPullbackContractionOk = volM5 >= 12_000;
 
   const { corridor: rawCorridor, redZoneReason } = classifyCleanCorridor(spotMc, cfg.includeMidCapCorridor);
@@ -160,17 +170,19 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     );
   }
 
-  // 2b. Survival Age Guard (>= 20m — anti-dump sniper pasca-migrasi)
-  const survivalAgeOk = ageMinutes >= 20;
+  // 2b. Survival Age Guard (>= 20m — kecuali jalur ketat Hyper-Viral Fast-Track 12–19m!)
+  const survivalAgeOk = ageMinutes >= 20 || isHyperViralFastTrack;
   checks.push({
     id: 'survival_age',
     layer: 'ANTI_TOP',
     label: 'Usia Bertahan Pasca-Migrasi (Anti-Sniper Dump)',
     passed: survivalAgeOk,
     severity: 'WAIT_DIP',
-    actual: `${Math.round(ageMinutes)} menit`,
-    threshold: '>= 20 menit',
-    detail: survivalAgeOk
+    actual: `${Math.round(ageMinutes)} menit${isHyperViralFastTrack ? ' (FAST-TRACK)' : ''}`,
+    threshold: '>= 20 menit (atau >=12m Hyper-Viral Fast-Track)',
+    detail: isHyperViralFastTrack
+      ? `Jalur Cepat Hyper-Viral aktif (${Math.round(ageMinutes)}m, Vol5m $${Math.round(volM5).toLocaleString()}).`
+      : survivalAgeOk
       ? `Sudah bertahan ${Math.round(ageMinutes)} menit pasca-migrasi.`
       : `Terlalu baru (${Math.round(ageMinutes)}m < 20m) — tunggu lolos dump sniper pertama & membentuk base.`,
   });
@@ -242,9 +254,20 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const whaleAbsorption = pM5 >= 2.0 && buyRatio5mPctEarly >= 42.0 && buyRatio1hPctEarly >= 48.0;
   const buyerPressureOk = whaleAbsorption || (buyRatio5mPctEarly >= 48.0 && buyRatio1hPctEarly >= 49.0);
   const isAgedCoin = ageMinutes >= 720;
-  const reqVolM5 = isAgedCoin ? 2_000 : 8_000;
-  const reqVolH1 = isAgedCoin ? 12_000 : 55_000;
-  const reqTurnH1 = isAgedCoin ? 0.15 : 0.6;
+  const isSteadyOrganicClimber =
+    !isAgedCoin &&
+    ageMinutes >= 45 &&
+    spotMc <= 145_000 &&
+    volM5 >= 4_500 &&
+    volH1 >= 45_000 &&
+    turnoverH1Ratio >= 0.7 &&
+    buyRatio1hPctEarly >= 54.0 &&
+    buyRatio5mPctEarly >= 50.0 &&
+    avgTicketM5Usd >= 28.0 &&
+    totalTxH1 >= 300;
+  const reqVolM5 = isAgedCoin ? 2_000 : isSteadyOrganicClimber ? 4_500 : 8_000;
+  const reqVolH1 = isAgedCoin ? 12_000 : isSteadyOrganicClimber ? 45_000 : 55_000;
+  const reqTurnH1 = isAgedCoin ? 0.15 : isSteadyOrganicClimber ? 0.7 : 0.6;
   const volVelocityOk =
     totalTxM5 >= 8 &&
     volM5 >= reqVolM5 &&
@@ -394,6 +417,8 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
       isViralVelocity,
       isPullbackContractionOk,
       isCorridorDViralBase,
+      isHyperViralFastTrack,
+      isSteadyOrganicClimber,
     },
   };
 }

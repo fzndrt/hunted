@@ -36,14 +36,19 @@ async def scanner_loop(
 ) -> None:
     while not stop_event.is_set():
         try:
-            results, notes = await run_scan_cycle(client, cfg)
+            watchlist_mints = await store.list_watchlist_mints(limit=15)
+            results, notes = await run_scan_cycle(client, cfg, watchlist_mints=watchlist_mints)
             ready = [r for r in results if r.verdict == "ENTRY_READY"]
             watch = [r for r in results if r.verdict == "WATCH_PULLBACK"]
+            for w in watch:
+                if w.security.passed:
+                    await store.add_watchlist_mint(w.pair.mint, ttl_minutes=120)
             logger.info(
-                "Scan selesai: %d diaudit | %d ENTRY_READY | %d WATCH | feeds=%s",
+                "Scan v4.1 selesai: %d diaudit | %d ENTRY_READY | %d WATCH | wl=%d | feeds=%s",
                 len(results),
                 len(ready),
                 len(watch),
+                len(watchlist_mints),
                 ",".join(notes),
             )
             for audit in ready:
@@ -52,8 +57,13 @@ async def scanner_loop(
                 ):
                     msg = format_entry_alert(audit)
                     if tg.enabled:
-                        await tg.send_message(client, msg)
+                        sent = await tg.send_message(client, msg)
+                        if sent:
+                            await store.remove_watchlist_mint(audit.pair.mint)
+                        else:
+                            await store.release_alert_cooldown(audit.pair.mint, "ENTRY_READY")
                     else:
+                        await store.remove_watchlist_mint(audit.pair.mint)
                         logger.info("ENTRY READY: $%s (%s) score=%d", audit.pair.symbol, audit.pair.mint, audit.total_score)
         except Exception as exc:
             logger.exception("Error siklus scanner: %s", exc)

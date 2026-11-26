@@ -104,6 +104,8 @@ export interface AntiTopResult {
     isViralVelocity?: boolean;
     isPullbackContractionOk?: boolean;
     isCorridorDViralBase?: boolean;
+    isHyperViralFastTrack?: boolean;
+    isSteadyOrganicClimber?: boolean;
   };
 }
 

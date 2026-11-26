@@ -32,12 +32,16 @@ def format_entry_alert(audit: AuditResult) -> str:
         title_line = f"💎 <b>DAILY CONSOLIDATION BREAKOUT — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_corridor_d_viral_base:
         title_line = f"🚀 <b>VIRAL BASE BREAKOUT (CORRIDOR D) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+    elif at.is_hyper_viral_fasttrack:
+        title_line = f"⚡ <b>HYPER-VIRAL FAST-TRACK — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif st is not None and st.regime == "PULLBACK_RECLAIM" and at.is_viral_velocity:
         title_line = f"🔥 <b>VIRAL PULLBACK RECLAIM — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_sleeper_revival:
         title_line = f"⚡ <b>SLEEPER REVIVAL (PRE-ATH) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+    elif at.is_steady_organic_climber:
+        title_line = f"📈 <b>STEADY ORGANIC CLIMBER — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     else:
-        title_line = f"🟢 <b>ENTRY READY (v4 OHLCV OK) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>ENTRY READY (v4.1 OHLCV OK) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
 
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         chart_line = (
@@ -199,16 +203,16 @@ async def handle_telegram_command(
             client,
             "\n".join(
                 [
-                    "<b>Corridor Desk v4 — Viral Velocity, OHLCV Pullback &amp; Daily Consolidation</b>",
+                    "<b>Corridor Desk v4.1 — Viral Absorption, Watchlist Rescan &amp; Daily Consolidation</b>",
                     f"Runtime: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS Worker'}</code> | Storage: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     "",
                     "<b>Daftar Perintah:</b>",
-                    "• <code>/scan</code> — Pindai 7 feed organik Solana (Intraday Viral + Konsolidasi Harian)",
+                    "• <code>/scan</code> — Pindai 9 feed organik + Watchlist Auto-Rescan (Intraday + Harian)",
                     "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 5 layer + OHLCV sebelum entry manual",
                     "• <code>/track &lt;MINT&gt; &lt;ENTRY_MC&gt; &lt;MODAL_USD&gt;</code> — Masukkan ke Exit Guard",
                     "• <code>/positions</code> — Lihat PnL &amp; AMM LP Retention posisi aktif",
                     "• <code>/close &lt;MINT&gt;</code> — Hapus posisi dari Exit Guard",
-                    "• <code>/status</code> — Cek konfigurasi bot &amp; penyimpanan",
+                    "• <code>/status</code> — Cek konfigurasi bot, Watchlist &amp; penyimpanan",
                 ]
             ),
             chat_id,
@@ -217,16 +221,17 @@ async def handle_telegram_command(
 
     if cmd == "/status":
         positions = await store.list_positions()  # type: ignore[attr-defined]
+        wl_mints = await store.list_watchlist_mints(limit=15)  # type: ignore[attr-defined]
         await tg.send_message(
             client,
             "\n".join(
                 [
-                    "<b>Status Bot Corridor Desk v4</b>",
+                    "<b>Status Bot Corridor Desk v4.1</b>",
                     f"• Lingkungan: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS'}</code>",
                     f"• Penyimpanan: <code>{getattr(store, 'mode', 'sqlite')}</code>",
-                    f"• Posisi Aktif Exit Guard: <b>{len(positions)}</b>",
+                    f"• Posisi Aktif Exit Guard: <b>{len(positions)}</b> | Watchlist Auto-Rescan: <b>{len(wl_mints)}</b>",
                     f"• Ambang Skor Minimal: <b>{cfg.min_score}/100</b> | Delay: <b>{cfg.reaction_delay_sec}s</b>",
-                    f"• Intraday Min Vol: <b>${cfg.min_vol_m5_usd:,.0f}/5m</b> · <b>${cfg.min_vol_h1_usd:,.0f}/1h</b>",
+                    f"• Intraday Min Vol: <b>${cfg.min_vol_m5_usd:,.0f}/5m</b> (Steady Climber $4.5K) · <b>${cfg.min_vol_h1_usd:,.0f}/1h</b>",
                     f"• Koridor C &amp; D Viral Base ($210K–$850K): <b>{'Aktif' if cfg.include_midcap_corridor else 'Nonaktif'}</b>",
                 ]
             ),
@@ -235,10 +240,14 @@ async def handle_telegram_command(
         return
 
     if cmd == "/scan":
-        await tg.send_message(client, "Memindai 8 feed Solana (Fresh + Sleeper Revival)...", chat_id)
-        results, _ = await run_scan_cycle(client, cfg)
+        await tg.send_message(client, "Memindai 9 feed Solana + Watchlist Auto-Rescan...", chat_id)
+        wl_mints = await store.list_watchlist_mints(limit=15)  # type: ignore[attr-defined]
+        results, _ = await run_scan_cycle(client, cfg, watchlist_mints=wl_mints)
         ready = [r for r in results if r.verdict == "ENTRY_READY"]
         watch = [r for r in results if r.verdict == "WATCH_PULLBACK"]
+        for w in watch:
+            if w.security.passed:
+                await store.add_watchlist_mint(w.pair.mint, ttl_minutes=120)  # type: ignore[attr-defined]
         if not ready:
             extra = ""
             if watch:
@@ -246,7 +255,7 @@ async def handle_telegram_command(
                 extra = f"\nKandidat Watch teratas: <b>${_esc(top_w.pair.symbol)}</b> ({top_w.total_score}/100) — {_esc(top_w.headline)}"
             await tg.send_message(
                 client,
-                f"Scan selesai ({len(results)} diaudit | {len(watch)} Watch Pullback). Belum ada token yang lolos 4 layer keras.{extra}",
+                f"Scan v4.1 selesai ({len(results)} diaudit | {len(watch)} Watch Pullback | {len(wl_mints)} Watchlist). Belum ada token yang lolos semua layer.{extra}",
                 chat_id,
             )
         else:

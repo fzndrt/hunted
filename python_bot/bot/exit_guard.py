@@ -201,6 +201,11 @@ class ExitGuardStore:
                     win_rate_pct REAL NOT NULL DEFAULT 0,
                     added_at_ms INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    mint TEXT PRIMARY KEY,
+                    expires_at_ms INTEGER NOT NULL
+                );
                 """
             )
 
@@ -391,3 +396,39 @@ class ExitGuardStore:
                     "DELETE FROM sent_alerts WHERE mint = ? AND alert_type = ?",
                     (mint, alert_type),
                 )
+
+    async def add_watchlist_mint(self, mint: str, ttl_minutes: int = 120) -> None:
+        """Simpan koin WATCH_PULLBACK yang sudah lolos Layer 1 Security agar di-rescan otomatis 2 jam."""
+        clean = mint.strip()
+        if not is_valid_solana_mint(clean):
+            return
+        expires_at = int(time.time() * 1000) + max(10, ttl_minutes) * 60_000
+        async with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO watchlist (mint, expires_at_ms)
+                    VALUES (?, ?)
+                    ON CONFLICT(mint) DO UPDATE SET expires_at_ms = excluded.expires_at_ms
+                    """,
+                    (clean, expires_at),
+                )
+
+    async def list_watchlist_mints(self, limit: int = 15) -> list[str]:
+        now = int(time.time() * 1000)
+        async with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM watchlist WHERE expires_at_ms <= ?", (now,))
+                rows = conn.execute(
+                    "SELECT mint FROM watchlist ORDER BY expires_at_ms DESC LIMIT ?",
+                    (max(1, limit),),
+                ).fetchall()
+                return [str(r["mint"]) for r in rows]
+
+    async def remove_watchlist_mint(self, mint: str) -> None:
+        clean = mint.strip()
+        if not clean:
+            return
+        async with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM watchlist WHERE mint = ?", (clean,))

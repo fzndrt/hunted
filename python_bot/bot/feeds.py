@@ -197,37 +197,46 @@ async def fetch_pairs_batch(
 
 async def _fetch_gecko_staggered(
     client: httpx.AsyncClient,
-) -> tuple[Any, Any, Any]:
-    """Tarik GeckoTerminal 5m, 1h & 6h berurutan (jeda 0.7s) agar anti-HTTP 429 & menangkap konsolidasi harian."""
+) -> tuple[Any, Any, Any, Any]:
+    """Tarik GeckoTerminal 5m (hal 1 & 2), 1h & 6h berurutan (jeda 0.55s) agar anti-HTTP 429 & menangkap climber tier-2."""
     gt_5m = await _get_json(
         client,
-        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m",
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1",
     )
-    await asyncio.sleep(0.7)
+    await asyncio.sleep(0.55)
+    gt_5m_p2 = await _get_json(
+        client,
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2",
+    )
+    await asyncio.sleep(0.55)
     gt_1h = await _get_json(
         client,
-        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h",
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1",
     )
-    await asyncio.sleep(0.7)
+    await asyncio.sleep(0.55)
     gt_6h = await _get_json(
         client,
-        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h",
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1",
     )
-    return gt_5m, gt_1h, gt_6h
+    return gt_5m, gt_5m_p2, gt_1h, gt_6h
 
 
 async def discover_solana_candidates(
-    client: httpx.AsyncClient, max_candidates: int = 65
+    client: httpx.AsyncClient,
+    max_candidates: int = 75,
+    watchlist_mints: Optional[list[str]] = None,
 ) -> tuple[list[PairSnapshot], list[str]]:
     """
-    Kumpulkan kandidat organik dari 7 sumber utama anti-429 & anti-paid-boost bias:
-      - Organik Intraday & Harian: GeckoTerminal 5m, 1h, 6h (staggered), DexScreener PumpSwap, Raydium, CTO
+    Kumpulkan kandidat organik dari 9 sumber utama + Watchlist Auto-Rescan (anti-429 & anti-paid-boost bias):
+      - Watchlist Auto-Rescan: koin yang sebelumnya lolos Layer 1 (WAIT_DIP) dipantau ulang hingga 2 jam
+      - Organik Intraday & Harian: GeckoTerminal 5m (hal 1 & 2), 1h, 6h (staggered), DexScreener PumpSwap, Raydium, CTO, Token Profiles
       - Sekunder: DexScreener Top Boosts (tidak pernah mendominasi urutan di atas feed organik)
     """
     dex_urls = {
         "dex_pumpswap": "https://api.dexscreener.com/latest/dex/search?q=pumpswap",
         "dex_raydium": "https://api.dexscreener.com/latest/dex/search?q=raydium",
         "dex_community_takeovers": "https://api.dexscreener.com/community-takeovers/latest/v1",
+        "dex_token_profiles": "https://api.dexscreener.com/token-profiles/latest/v1",
         "dex_boosts_top": "https://api.dexscreener.com/token-boosts/top/v1",
     }
 
@@ -235,7 +244,7 @@ async def discover_solana_candidates(
     gecko_task = _fetch_gecko_staggered(client)
     dex_tasks = [_get_json(client, dex_urls[k]) for k in dex_keys]
     gathered = await asyncio.gather(gecko_task, *dex_tasks)
-    gt_5m, gt_1h, gt_6h = gathered[0]
+    gt_5m, gt_5m_p2, gt_1h, gt_6h = gathered[0]
     dex_responses = gathered[1:]
 
     sources_map: dict[str, set[str]] = {}
@@ -246,8 +255,18 @@ async def discover_solana_candidates(
         if is_valid_solana_mint(m) and m not in VERIFIED_HARD_QUOTE_MINTS:
             sources_map.setdefault(m, set()).add(source)
 
+    if watchlist_mints:
+        wl_added = 0
+        for wm in watchlist_mints[:15]:
+            before = len(sources_map)
+            add_mint(wm, "watchlist_rescan")
+            if len(sources_map) > before or (wm.strip() in sources_map and "watchlist_rescan" in sources_map[wm.strip()]):
+                wl_added += 1
+        notes.append(f"watchlist_rescan:{wl_added}")
+
     for key, payload in (
         ("gecko_trending_5m", gt_5m),
+        ("gecko_trending_5m_p2", gt_5m_p2),
         ("gecko_trending_1h", gt_1h),
         ("gecko_trending_6h", gt_6h),
     ):
@@ -267,27 +286,29 @@ async def discover_solana_candidates(
             for p in payload.get("pairs") or []:
                 if str(p.get("chainId") or "").lower() == "solana":
                     add_mint(str((p.get("baseToken") or {}).get("address") or ""), key)
-        elif key in {"dex_community_takeovers", "dex_boosts_top"} and isinstance(payload, list):
+        elif key in {"dex_community_takeovers", "dex_token_profiles", "dex_boosts_top"} and isinstance(payload, list):
             for item in payload[:25]:
                 if str(item.get("chainId") or "").lower() == "solana":
                     add_mint(str(item.get("tokenAddress") or ""), key)
         after = sum(1 for s in sources_map.values() if key in s)
         notes.append(f"{key}:{after - before}")
 
-    # Prioritaskan token dari feed ORGANIK (Gecko 5m/1h/6h, PumpSwap, Raydium, CTO) — bukan paid boosts!
-    def _mint_priority(m: str) -> tuple[int, int]:
+    # Prioritaskan Watchlist Rescan + feed ORGANIK (Gecko 5m/1h/6h, PumpSwap, Raydium, CTO, Profiles) — bukan paid boosts!
+    def _mint_priority(m: str) -> tuple[int, int, int]:
         srcs = sources_map[m]
+        wl_bonus = 1 if "watchlist_rescan" in srcs else 0
         organic_cnt = sum(1 for s in srcs if s in ORGANIC_FEED_SOURCES)
         gecko_bonus = (
             1
             if (
                 "gecko_trending_5m" in srcs
+                or "gecko_trending_5m_p2" in srcs
                 or "gecko_trending_1h" in srcs
                 or "gecko_trending_6h" in srcs
             )
             else 0
         )
-        return (organic_cnt + gecko_bonus, len(srcs))
+        return (wl_bonus, organic_cnt + gecko_bonus, len(srcs))
 
     ranked_mints = sorted(sources_map.keys(), key=_mint_priority, reverse=True)[
         :max_candidates
@@ -297,6 +318,7 @@ async def discover_solana_candidates(
     pairs = list(batch.values())
     pairs.sort(
         key=lambda p: (
+            1 if "watchlist_rescan" in p.feed_sources else 0,
             sum(1 for s in p.feed_sources if s in ORGANIC_FEED_SOURCES),
             p.vol_m5,
             p.vol_h1,

@@ -92,7 +92,12 @@ async def audit_pair(
         return score_and_finalize(pair, security, anti_top, execution, cfg, structure=None)
 
     rugcheck = await fetch_rugcheck_report(client, pair.mint)
-    security = evaluate_security(pair, rugcheck)
+    security = evaluate_security(
+        pair,
+        rugcheck,
+        require_hyper_viral_holders=anti_top.is_hyper_viral_fasttrack,
+        require_steady_climber_holders=anti_top.is_steady_organic_climber,
+    )
 
     # Layer 2B: Verifikasi Struktur Candle OHLCV asli (Anti-Pucuk Blow-Off & Klasifikasi Konsolidasi Harian)
     structure: Optional[StructureResult] = None
@@ -134,11 +139,16 @@ async def inspect_mint(
 
 
 async def run_scan_cycle(
-    client: httpx.AsyncClient, cfg: BotConfig, max_stage2: int = 16
+    client: httpx.AsyncClient,
+    cfg: BotConfig,
+    max_stage2: int = 16,
+    watchlist_mints: Optional[list[str]] = None,
 ) -> tuple[list[AuditResult], list[str]]:
     from .config import ORGANIC_FEED_SOURCES
 
-    candidates, feed_notes = await discover_solana_candidates(client, max_candidates=65)
+    candidates, feed_notes = await discover_solana_candidates(
+        client, max_candidates=75, watchlist_mints=watchlist_mints
+    )
     now_ms = int(time.time() * 1000)
 
     def _age_min(p: PairSnapshot) -> float:
@@ -146,7 +156,8 @@ async def run_scan_cycle(
             return 999.0
         return max(0.1, (now_ms - p.pair_created_at_ms) / 60_000.0)
 
-    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, int, float, float]:
+    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, int, int, float, float]:
+        is_wl = 1 if "watchlist_rescan" in p.feed_sources else 0
         organic_hits = sum(1 for src in p.feed_sources if src in ORGANIC_FEED_SOURCES)
         in_core_corridor = 22_000.0 <= p.market_cap <= 395_000.0 and p.liquidity_usd >= 10_000.0
         in_viral_base_d = (
@@ -155,11 +166,18 @@ async def run_scan_cycle(
             and p.liquidity_usd >= 38_000.0
         )
         in_corridor = 1 if (in_core_corridor or in_viral_base_d) else 0
-        survived_sniper = 1 if _age_min(p) >= cfg.min_pair_age_minutes else 0
-        has_live_vol = 1 if (p.vol_m5 >= 6_000.0 or (_age_min(p) >= 720.0 and p.vol_m5 >= 1_800.0)) else 0
+        age_m = _age_min(p)
+        survived_sniper = 1 if (
+            age_m >= cfg.min_pair_age_minutes
+            or (12.0 <= age_m < cfg.min_pair_age_minutes and p.vol_m5 >= 35_000.0 and p.vol_h1 >= 150_000.0)
+        ) else 0
+        has_live_vol = 1 if (
+            p.vol_m5 >= 4_500.0 or (age_m >= 720.0 and p.vol_m5 >= 1_800.0)
+        ) else 0
         multi_pool_bonus = 20_000.0 if p.pool_count >= 2 else 0.0
         return (
             in_corridor,
+            is_wl,
             survived_sniper,
             has_live_vol,
             organic_hits * 25_000.0 + multi_pool_bonus + p.vol_m5,

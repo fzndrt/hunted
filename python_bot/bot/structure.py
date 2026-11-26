@@ -71,13 +71,18 @@ def _evaluate_intraday_ohlcv(
     checks: list[GateCheck] = []
 
     if len(candles_5m) < 4:
-        # Fallback ketat berbasis snapshot ketika OHLCV tidak tersedia (anti-chase pucuk)
+        # Fallback ketat berbasis snapshot ketika OHLCV tidak tersedia (v4.1: dukung Hyper-Viral Fast-Track 12–19m!)
         safe_snapshot = (
-            anti_top.age_minutes >= max(cfg.min_pair_age_minutes, 25.0)
-            and anti_top.p_m5 >= -1.0
+            anti_top.p_m5 >= -1.0
             and (
-                (anti_top.is_viral_velocity and pair.vol_m5 >= 15_000.0)
-                or (anti_top.vol_m5_accel_ratio >= 0.65 and anti_top.p_h1 <= cfg.max_fresh_h1_change_pct)
+                (anti_top.is_hyper_viral_fasttrack and pair.vol_m5 >= 35_000.0)
+                or (
+                    anti_top.age_minutes >= max(cfg.min_pair_age_minutes, 25.0)
+                    and (
+                        (anti_top.is_viral_velocity and pair.vol_m5 >= 15_000.0)
+                        or (anti_top.vol_m5_accel_ratio >= 0.65 and anti_top.p_h1 <= cfg.max_fresh_h1_change_pct)
+                    )
+                )
             )
         )
         checks.append(
@@ -88,9 +93,9 @@ def _evaluate_intraday_ohlcv(
                 passed=safe_snapshot,
                 severity="PASS" if safe_snapshot else "WAIT_DIP",
                 actual=f"OHLCV N/A · Vol5m ${pair.vol_m5:,.0f} · accel {anti_top.vol_m5_accel_ratio:.2f}x · 1h {anti_top.p_h1:+.0f}%",
-                threshold="OHLCV 5m >= 4 candle (atau viral >=$15K/5m / accel>=0.65x)",
+                threshold="OHLCV 5m >= 4 candle (atau Hyper-Viral Fast-Track / viral >=$15K/5m)",
                 detail=(
-                    "Data candle 5m sementara kosong, namun profil momentum snapshot masih terukur."
+                    "Data candle 5m belum penuh (pool sangat baru), namun profil momentum hyper-viral/snapshot terverifikasi."
                     if safe_snapshot
                     else "Data candle 5m belum cukup/kosong pada token berisiko pucuk — tunda entry."
                 ),
@@ -119,22 +124,61 @@ def _evaluate_intraday_ohlcv(
         else 0.0
     )
 
-    # 1. Deteksi Blow-Off Upper Wick Rejection (pucuk tertolak sniper/whale)
-    # Catatan v4: cek wick pada 2 candle terbaru agar pullback sehat 15 menit lalu (-40% yg sudah reclaim hijau) tidak salah diveto!
+    # Pre-hitung Higher-Low & GreenVol lebih awal agar blowoff_wick_guard bisa membedakan
+    # Viral Green Absorption (seperti PAIR: 2 candle HIJAU, HL utuh, GreenVol 85%, Vol5m $73K)
+    # vs Blow-Off Top Merah / Distribusi Mati!
+    prior_slice = candles_5m[-7:-1] if len(candles_5m) >= 7 else candles_5m[:-1]
+    prior_support_low = min(c[3] for c in prior_slice) if prior_slice else 0.0
+    support_broken = prior_support_low > 0 and current_close < prior_support_low * 0.99
+
+    mid = len(candles_5m) // 2
+    first_half_low = min(lows[:mid]) if mid > 0 else lows[0]
+    second_half_low = min(lows[mid:]) if mid > 0 else lows[-1]
+    higher_low_intact = first_half_low > 0 and second_half_low >= first_half_low * 0.95
+
+    last_6 = candles_5m[-6:]
+    total_v6 = sum(c[5] for c in last_6)
+    green_v6 = sum(c[5] for c in last_6 if c[4] >= c[1])
+    green_vol_share_pct = (green_v6 / total_v6 * 100.0) if total_v6 > 0 else 50.0
+
+    # 1. Deteksi Blow-Off Upper Wick Rejection (v4.1 FIX: bedakan candle HIJAU viral absorption vs blow-off MERAH!)
     recent_2 = candles_5m[-2:]
     meaningful_wicks = [
         _upper_wick_ratio(c)
         for c in recent_2
         if c[3] > 0 and ((c[2] - c[3]) / c[3]) >= 0.035
     ]
+    meaningful_red_wicks = [
+        _upper_wick_ratio(c)
+        for c in recent_2
+        if c[4] < c[1] and c[3] > 0 and ((c[2] - c[3]) / c[3]) >= 0.035
+    ]
     max_recent_wick_pct = (max(meaningful_wicks) * 100.0) if meaningful_wicks else 0.0
+    max_red_wick_pct = (max(meaningful_red_wicks) * 100.0) if meaningful_red_wicks else 0.0
     _, latest_o, _, _, latest_c, _ = candles_5m[-1]
     latest_red_dump_pct = ((latest_c - latest_o) / latest_o * 100.0) if latest_o > 0 else 0.0
+
+    # Viral Green Absorption: candle terbaru HIJAU, Higher-Low utuh, GreenVol >= 62%, Vol5m >= $25K, buyer dominan
+    is_viral_green_absorption = (
+        higher_low_intact
+        and (not support_broken)
+        and (latest_c >= latest_o)
+        and (green_vol_share_pct >= 62.0)
+        and (pair.vol_m5 >= 25_000.0)
+        and (anti_top.buy_ratio_5m_pct >= 50.0)
+        and (anti_top.buy_ratio_1h_pct >= 52.0)
+    )
+    wick_veto_hit = (
+        (max_red_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
+        or (max_recent_wick_pct >= 68.0 and drawdown_from_peak_pct >= 12.0)
+        if is_viral_green_absorption
+        else (max_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
+    )
 
     # Pullback sehat hingga -48% diperbolehkan JIKA candle terakhir sudah mulai stabil/hijau (tidak sedang jatuh merah)
     deep_crash_dump = drawdown_from_peak_pct >= 52.0
     blowoff_wick_veto = (
-        (max_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
+        wick_veto_hit
         or (drawdown_from_peak_pct >= 24.0 and latest_red_dump_pct <= -3.0)
         or (latest_red_dump_pct <= -8.0)
         or deep_crash_dump
@@ -147,25 +191,38 @@ def _evaluate_intraday_ohlcv(
             passed=not blowoff_wick_veto,
             severity="PASS" if not blowoff_wick_veto else "VETO",
             actual=f"Wick atas {max_recent_wick_pct:.0f}% · DD dr peak -{drawdown_from_peak_pct:.1f}%",
-            threshold="Wick < 48% di pucuk, DD <= -52% & tidak ada candle dump >= -8%",
+            threshold=(
+                "Wick < 68% (Viral Green Absorption, RedWick < 48%)"
+                if is_viral_green_absorption
+                else "Wick < 48% di pucuk, DD <= -52% & tidak ada candle dump >= -8%"
+            ),
             detail=(
-                "Struktur candle 5m bersih tanpa jarum penolakan pucuk (blow-off top)."
-                if not blowoff_wick_veto
-                else f"DITOLAK: Terdeteksi pucuk blow-off / dump keras (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
+                f"Penyerapan volatilitas viral sehat (candle HIJAU, GreenVol {green_vol_share_pct:.0f}%, wick {max_recent_wick_pct:.0f}% < 68%)."
+                if (not blowoff_wick_veto) and is_viral_green_absorption and max_recent_wick_pct >= 48.0
+                else (
+                    "Struktur candle 5m bersih tanpa jarum penolakan pucuk (blow-off top)."
+                    if not blowoff_wick_veto
+                    else f"DITOLAK: Terdeteksi pucuk blow-off / dump keras (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
+                )
             ),
         )
     )
 
-    # 2. Deteksi Volume Exhaustion di Pucuk (bensin habis setelah lonjakan 1h)
-    window_vols = vols[-12:]
+    # 2. Deteksi Volume Exhaustion di Pucuk (v4.1 FIX: kompensasi partial candle yang baru jalan 1–2 menit!)
+    # Jika candle 5m terakhir belum tutup (vols[-1] < 65% rolling pair.vol_m5 dari DexScreener),
+    # gunakan max(vols[-1], pair.vol_m5) agar candle 1-menit tidak memicu VETO EXHAUSTION_TOP palsu (kasus duk!).
+    effective_last_vol = max(vols[-1], pair.vol_m5) if vols[-1] < pair.vol_m5 * 0.65 else vols[-1]
+    effective_vols = vols[:-1] + [effective_last_vol]
+
+    window_vols = effective_vols[-12:]
     peak_candle_vol = max(window_vols) if window_vols else 0.0
-    recent_2_avg_vol = sum(vols[-2:]) / 2.0
+    recent_2_avg_vol = sum(effective_vols[-2:]) / 2.0
     recent_to_peak_ratio = (
         (recent_2_avg_vol / peak_candle_vol) if peak_candle_vol > 0 else 1.0
     )
-    prior_vols = vols[-6:-1] if len(vols) >= 6 else vols[:-1]
+    prior_vols = effective_vols[-6:-1] if len(effective_vols) >= 6 else effective_vols[:-1]
     med_prior_vol = median(prior_vols) if prior_vols else recent_2_avg_vol
-    vol_expansion = (vols[-1] / med_prior_vol) if med_prior_vol > 0 else 1.0
+    vol_expansion = (effective_last_vol / med_prior_vol) if med_prior_vol > 0 else 1.0
 
     # Jika harga masih duduk di dekat puncak (DD <= 15%) dan volume anjlok < 32% peak candle
     # (kecuali volume absolut 5m masih deras >= $25K pada fase pause viral) -> Bensin Habis!
@@ -184,9 +241,9 @@ def _evaluate_intraday_ohlcv(
             passed=not vol_exhaustion_top,
             severity="PASS" if not vol_exhaustion_top else "VETO",
             actual=f"Vol/Peak {recent_to_peak_ratio * 100:.0f}% · Ekspansi {vol_expansion:.2f}x",
-            threshold="Vol terbaru >= 32% peak candle saat extended (atau >= $25K/5m)",
+            threshold="Vol terbaru >= 32% peak candle saat extended (atau ekspansi >= 1.15x / >= $25K/5m)",
             detail=(
-                f"Volume 5m masih terjaga/ekspansi ({recent_to_peak_ratio * 100:.0f}% dari puncak)."
+                f"Volume 5m masih terjaga/ekspansi ({recent_to_peak_ratio * 100:.0f}% dari puncak, ekspansi {vol_expansion:.2f}x)."
                 if not vol_exhaustion_top
                 else f"DITOLAK: Volume Exhaustion di pucuk — harga masih tinggi (+{anti_top.p_h1:.0f}% 1h) tapi volume anjlok ke {recent_to_peak_ratio * 100:.0f}% dari puncaknya (siap dump)."
             ),
@@ -194,21 +251,6 @@ def _evaluate_intraday_ohlcv(
     )
 
     # 3. Integritas Support & Higher-Low (jangan beli candle yang baru jebol support 30m terakhir!)
-    prior_slice = candles_5m[-7:-1] if len(candles_5m) >= 7 else candles_5m[:-1]
-    prior_support_low = min(c[3] for c in prior_slice) if prior_slice else 0.0
-    support_broken = prior_support_low > 0 and current_close < prior_support_low * 0.99
-
-    mid = len(candles_5m) // 2
-    first_half_low = min(lows[:mid]) if mid > 0 else lows[0]
-    second_half_low = min(lows[mid:]) if mid > 0 else lows[-1]
-    higher_low_intact = first_half_low > 0 and second_half_low >= first_half_low * 0.95
-
-    # Hitung dominasi volume candle hijau pada 6 candle terakhir
-    last_6 = candles_5m[-6:]
-    total_v6 = sum(c[5] for c in last_6)
-    green_v6 = sum(c[5] for c in last_6 if c[4] >= c[1])
-    green_vol_share_pct = (green_v6 / total_v6 * 100.0) if total_v6 > 0 else 50.0
-
     # Pada Pullback Reclaim viral (seperti $Zero di -40%), 2 candle sebelumnya wajar merah saat koreksi;
     # selama support utuh, Higher Low utuh, dan candle terbaru sudah reclaim hijau -> sehat!
     is_healthy_pullback_reclaim = (
@@ -216,7 +258,7 @@ def _evaluate_intraday_ohlcv(
         and (not support_broken)
         and 8.0 <= drawdown_from_peak_pct <= 48.0
         and latest_c >= latest_o
-        and max_recent_wick_pct < 42.0
+        and (max_recent_wick_pct < (68.0 if is_viral_green_absorption else 42.0))
     )
 
     structure_broken = support_broken or (
@@ -521,17 +563,43 @@ def evaluate_candle_structure(
     return _evaluate_intraday_ohlcv(pair, anti_top, candles_5m, cfg)
 
 
+def aggregate_1m_to_3m_candles(candles_1m: list[list[float]]) -> list[list[float]]:
+    """Gabungkan candle 1-menit menjadi bar 3-menit untuk memverifikasi pool hyper-viral berusia 12–19m."""
+    if len(candles_1m) < 9:
+        return []
+    grouped: list[list[float]] = []
+    for i in range(0, len(candles_1m) - 2, 3):
+        chunk = candles_1m[i : i + 3]
+        grouped.append(
+            [
+                chunk[0][0],
+                chunk[0][1],
+                max(c[2] for c in chunk),
+                min(c[3] for c in chunk),
+                chunk[-1][4],
+                sum(c[5] for c in chunk),
+            ]
+        )
+    return grouped
+
+
 async def fetch_and_evaluate_structure(
     client: httpx.AsyncClient,
     pair: PairSnapshot,
     anti_top: AntiTopResult,
     cfg: BotConfig,
 ) -> StructureResult:
-    """Tarik OHLCV dari GeckoTerminal sesuai usia token lalu evaluasi struktur candle."""
+    """Tarik OHLCV dari GeckoTerminal sesuai usia token lalu evaluasi struktur candle (dengan cadangan 1m untuk pool baru)."""
     if anti_top.age_minutes >= 20.0 * 60.0:
         candles_1h = await fetch_pool_ohlcv(client, pair.pair_address, "hour", 1, 24)
         await asyncio.sleep(0.35)
         candles_5m = await fetch_pool_ohlcv(client, pair.pair_address, "minute", 5, 12)
         return evaluate_candle_structure(pair, anti_top, candles_5m, candles_1h, cfg)
     candles_5m = await fetch_pool_ohlcv(client, pair.pair_address, "minute", 5, 24)
+    if len(candles_5m) < 4 and (anti_top.is_hyper_viral_fasttrack or anti_top.is_viral_velocity):
+        await asyncio.sleep(0.35)
+        candles_1m = await fetch_pool_ohlcv(client, pair.pair_address, "minute", 1, 24)
+        synth_3m = aggregate_1m_to_3m_candles(candles_1m)
+        if len(synth_3m) >= 4:
+            return evaluate_candle_structure(pair, anti_top, synth_3m, [], cfg)
     return evaluate_candle_structure(pair, anti_top, candles_5m, [], cfg)

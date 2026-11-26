@@ -71,10 +71,22 @@ def evaluate_anti_top(
     vol_m5_accel_ratio = (pair.vol_m5 / avg_5m_from_1h) if avg_5m_from_1h > 0 else 1.0
     is_daily_coin = age_minutes >= 20.0 * 60.0
 
-    # Deteksi Viral Velocity (v4): arus modal deras seperti $Zero / PERRO / 4CHAN
+    # Deteksi Viral Velocity (v4): arus modal deras seperti $Zero / PERRO / 4CHAN / PAIR
     is_viral_velocity = (
         (pair.vol_m5 >= 15_000.0 and pair.vol_h1 >= 120_000.0 and turnover_h1_ratio >= 0.70)
         or (pair.vol_m5 >= 25_000.0 and pair.vol_h1 >= 180_000.0 and turnover_h1_ratio >= 0.50)
+    )
+    # Hyper-Viral Fast-Track (v4.1): koin 12–19m dgn arus modal masif seperti PAIR ($73K/5m, $256K/1h)
+    # akan tetap diverifikasi ketat di Layer 1 (>=750 holders, 0 risks, 0% dev) & Layer 2B (OHLCV 5m/1m).
+    is_hyper_viral_fasttrack = (
+        12.0 <= age_minutes < cfg.min_pair_age_minutes
+        and pair.vol_m5 >= 35_000.0
+        and pair.vol_h1 >= 150_000.0
+        and turnover_h1_ratio >= 1.20
+        and liq_usd >= 20_000.0
+        and buy_ratio_1h >= 52.0
+        and buy_ratio_5m >= 48.0
+        and tx_1h >= 600
     )
     # Kontraksi volume sehat saat pullback: Vol5m >= $12K tidak boleh dianggap sekarat (seperti $Zero $50K/5m di 0.43x accel!)
     is_pullback_contraction_ok = pair.vol_m5 >= 12_000.0
@@ -162,8 +174,8 @@ def evaluate_anti_top(
         )
     )
 
-    # 2b. Survival Age Guard (Blokir koin ultra-baru < 20 menit yg rawan dump sniper langsung mati!)
-    age_ok = age_minutes >= cfg.min_pair_age_minutes
+    # 2b. Survival Age Guard (Blokir koin ultra-baru < 20m, kecuali jalur ketat Hyper-Viral Fast-Track 12–19m!)
+    age_ok = age_minutes >= cfg.min_pair_age_minutes or is_hyper_viral_fasttrack
     checks.append(
         GateCheck(
             id="survival_age",
@@ -171,12 +183,16 @@ def evaluate_anti_top(
             label="Usia Bertahan Pasca-Migrasi (Anti-Sniper Dump)",
             passed=age_ok,
             severity="PASS" if age_ok else "WAIT_DIP",
-            actual=f"{age_minutes:.0f} menit",
-            threshold=f">= {cfg.min_pair_age_minutes:.0f} menit",
+            actual=f"{age_minutes:.0f} menit" + (" (FAST-TRACK)" if is_hyper_viral_fasttrack else ""),
+            threshold=f">= {cfg.min_pair_age_minutes:.0f} menit (atau >=12m Hyper-Viral Fast-Track)",
             detail=(
-                f"Sudah bertahan {age_minutes:.0f} menit pasca-migrasi (melewati gelombang dump sniper awal)."
-                if age_ok
-                else f"Terlalu baru ({age_minutes:.0f}m < {cfg.min_pair_age_minutes:.0f}m) — tunggu lolos dump sniper pertama & membentuk base."
+                f"Jalur Cepat Hyper-Viral aktif ({age_minutes:.0f}m, Vol5m ${pair.vol_m5:,.0f}, Vol1h ${pair.vol_h1:,.0f}) — wajib >=750 holders & 0 risks di L1."
+                if is_hyper_viral_fasttrack
+                else (
+                    f"Sudah bertahan {age_minutes:.0f} menit pasca-migrasi (melewati gelombang dump sniper awal)."
+                    if age_ok
+                    else f"Terlalu baru ({age_minutes:.0f}m < {cfg.min_pair_age_minutes:.0f}m) — tunggu lolos dump sniper pertama & membentuk base."
+                )
             ),
         )
     )
@@ -254,11 +270,35 @@ def evaluate_anti_top(
         or (pair.vol_h1 >= 12_000.0 and vol_h1_share_24h_pct >= 25.0)
     )
 
-    # 6. LIVE DEMAND VELOCITY (Dinaikkan di v4!), PULLBACK CONTRACTION EXEMPTION & ANTI-WASH-BOT 5m
+    # 6. LIVE DEMAND VELOCITY (v4.1: MC-Scaled Steady Organic Climber + Pullback Contraction + Anti-Wash-Bot!)
     is_aged_wakeup = age_minutes >= 720.0 and has_volume_wakeup
-    req_vol_m5 = 2_000.0 if is_aged_wakeup else cfg.min_vol_m5_usd
-    req_vol_h1 = 12_000.0 if is_aged_wakeup else cfg.min_vol_h1_usd
-    req_turnover_h1 = 0.15 if is_aged_wakeup else cfg.min_turnover_h1_ratio
+    # Steady Organic Climber (seperti duk di $35K–$135K): Vol5m $4.5K–$7.9K diperbolehkan HANYA jika
+    # arus 1 jam sangat tebal (Vol1h >= $45K, Turn1h >= 0.70x, Buy 1h >= 54%, ticket >= $28/tx, >=300 tx 1h)
+    # dan tetap diverifikasi >=400 holders di Layer 1. Koin sampah tetap mati total!
+    is_steady_organic_climber = (
+        (not is_aged_wakeup)
+        and age_minutes >= 45.0
+        and spot_mc <= 145_000.0
+        and pair.vol_m5 >= 4_500.0
+        and pair.vol_h1 >= 45_000.0
+        and turnover_h1_ratio >= 0.70
+        and buy_ratio_1h >= 54.0
+        and buy_ratio_5m >= 50.0
+        and avg_ticket_5m >= 28.0
+        and tx_1h >= 300
+    )
+    if is_aged_wakeup:
+        req_vol_m5 = 2_000.0
+        req_vol_h1 = 12_000.0
+        req_turnover_h1 = 0.15
+    elif is_steady_organic_climber:
+        req_vol_m5 = 4_500.0
+        req_vol_h1 = 45_000.0
+        req_turnover_h1 = 0.70
+    else:
+        req_vol_m5 = cfg.min_vol_m5_usd
+        req_vol_h1 = cfg.min_vol_h1_usd
+        req_turnover_h1 = cfg.min_turnover_h1_ratio
 
     vol_m5_ok = pair.vol_m5 >= req_vol_m5 and tx_5m >= 8
     vol_h1_ok = (age_minutes < 15.0) or (
@@ -471,4 +511,6 @@ def evaluate_anti_top(
         is_viral_velocity=is_viral_velocity,
         is_pullback_contraction_ok=is_pullback_contraction_ok,
         is_corridor_d_viral_base=corridor_d_qualified,
+        is_hyper_viral_fasttrack=is_hyper_viral_fasttrack,
+        is_steady_organic_climber=is_steady_organic_climber,
     )

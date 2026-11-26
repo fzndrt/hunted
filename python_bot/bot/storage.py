@@ -19,6 +19,7 @@ from .models import PairSnapshot, TrackedPosition
 logger = logging.getLogger(__name__)
 
 POSITIONS_HASH_KEY = "corridor_desk:v2:positions"
+WATCHLIST_HASH_KEY = "corridor_desk:v2:watchlist"
 ALERT_PREFIX = "corridor_desk:v2:alert:"
 
 
@@ -57,6 +58,14 @@ class PositionStore(Protocol):
     async def release_alert_cooldown(
         self, mint: str, alert_type: str
     ) -> None: ...
+
+    async def add_watchlist_mint(
+        self, mint: str, ttl_minutes: int = 120
+    ) -> None: ...
+
+    async def list_watchlist_mints(self, limit: int = 15) -> list[str]: ...
+
+    async def remove_watchlist_mint(self, mint: str) -> None: ...
 
 
 def validate_upstash_rest_url(raw_url: str) -> Optional[str]:
@@ -268,6 +277,43 @@ class UpstashExitGuardStore:
     async def release_alert_cooldown(self, mint: str, alert_type: str) -> None:
         key = f"{ALERT_PREFIX}{mint.strip()}:{alert_type.strip()}"
         await self._cmd_with_status("DEL", key)
+
+    async def add_watchlist_mint(self, mint: str, ttl_minutes: int = 120) -> None:
+        """Simpan kandidat WATCH_PULLBACK yang sudah lolos Layer 1 di Upstash Redis selama 2 jam."""
+        clean = mint.strip()
+        if not is_valid_solana_mint(clean):
+            return
+        expires_sec = int(time.time()) + max(10, ttl_minutes) * 60
+        await self._cmd_with_status("HSET", WATCHLIST_HASH_KEY, clean, str(expires_sec))
+
+    async def list_watchlist_mints(self, limit: int = 15) -> list[str]:
+        ok, res = await self._cmd_with_status("HGETALL", WATCHLIST_HASH_KEY)
+        if not ok or not isinstance(res, list):
+            return []
+        now_sec = int(time.time())
+        active: list[tuple[int, str]] = []
+        expired: list[str] = []
+        for i in range(0, len(res) - 1, 2):
+            m = str(res[i]).strip()
+            try:
+                exp = int(res[i + 1])
+            except (TypeError, ValueError):
+                expired.append(m)
+                continue
+            if exp <= now_sec or not is_valid_solana_mint(m):
+                expired.append(m)
+            else:
+                active.append((exp, m))
+        if expired:
+            await self._cmd_with_status("HDEL", WATCHLIST_HASH_KEY, *expired[:20])
+        active.sort(reverse=True)
+        return [m for _, m in active[: max(1, limit)]]
+
+    async def remove_watchlist_mint(self, mint: str) -> None:
+        clean = mint.strip()
+        if not clean:
+            return
+        await self._cmd_with_status("HDEL", WATCHLIST_HASH_KEY, clean)
 
 
 class SqliteStoreWrapper(ExitGuardStore):
