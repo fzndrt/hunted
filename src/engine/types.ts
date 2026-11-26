@@ -1,6 +1,6 @@
 export type Verdict = 'ENTRY_READY' | 'WATCH_PULLBACK' | 'REJECTED';
 
-export type CorridorId = 'A_PRE_100K' | 'B_POST_100K' | 'C_MID_EXPANSION' | 'RED_ZONE';
+export type CorridorId = 'A_PRE_100K' | 'B_POST_100K' | 'C_MID_EXPANSION' | 'D_VIRAL_BASE' | 'RED_ZONE';
 
 export interface ScanConfig {
   reactionDelaySec: number;
@@ -62,6 +62,8 @@ export interface SecurityAuditResult {
     hardQuoteSymbol: string;
     hardQuoteReserveRatioPct: number | null;
     rugScore: number | null;
+    holdersPerMin?: number;
+    cleanViralPareto?: boolean;
   };
 }
 
@@ -99,6 +101,9 @@ export interface AntiTopResult {
     isSleeperRevival: boolean;
     volWake5mRatio: number;
     volH1Share24hPct: number;
+    isViralVelocity?: boolean;
+    isPullbackContractionOk?: boolean;
+    isCorridorDViralBase?: boolean;
   };
 }
 

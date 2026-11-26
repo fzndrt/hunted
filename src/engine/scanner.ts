@@ -322,9 +322,12 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
     const liq = Number(best.liquidity?.usd) || 0;
     const quoteMint = String(best.quoteToken?.address ?? '').trim();
 
-    // Must have verified hard quote, basic liquidity, and sit in early-to-mid observable range ($18K–$600K)
+    // Must have verified hard quote, basic liquidity, and sit in early-to-viral-base range ($18K–$900K)
     if (!VERIFIED_HARD_QUOTE_MINTS[quoteMint]) continue;
-    if (mc < 18_000 || mc > 650_000 || liq < 7_500) continue;
+    const volH1 = Number(best.volume?.h1) || 0;
+    const inBasicRange = mc >= 18_000 && mc <= 450_000 && liq >= 7_500;
+    const inViralBaseD = mc > 450_000 && mc <= 900_000 && volH1 >= 220_000 && liq >= 38_000;
+    if (!inBasicRange && !inViralBaseD) continue;
 
     const s1 = evaluateAntiTopLayer(best, cfg);
     // Prioritize Sleeper Revival + tokens that pass AntiTop or are clean pullback-watch candidates

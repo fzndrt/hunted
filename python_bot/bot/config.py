@@ -112,6 +112,16 @@ ENTRY_CORRIDORS: tuple[EntryCorridor, ...] = (
         default_tp1_pct=30.0,
         default_tp2_pct=65.0,
     ),
+    EntryCorridor(
+        corridor_id="CORRIDOR_D_VIRAL_BASE",
+        label="Corridor D (Viral Base Breakout $390K–$850K)",
+        min_mc=390_000.0,
+        max_mc=850_000.0,
+        ceiling_mc=1_300_000.0,
+        default_hard_stop_pct=14.0,
+        default_tp1_pct=35.0,
+        default_tp2_pct=85.0,
+    ),
 )
 
 
@@ -169,9 +179,9 @@ class BotConfig:
     max_h1_change_pct: float = 210.0
     min_pair_age_minutes: float = 20.0
     min_liquidity_usd: float = 12_000.0
-    min_vol_m5_usd: float = 2_000.0
-    min_vol_h1_usd: float = 15_000.0
-    min_turnover_h1_ratio: float = 0.25
+    min_vol_m5_usd: float = 8_000.0
+    min_vol_h1_usd: float = 55_000.0
+    min_turnover_h1_ratio: float = 0.60
     min_vol_m5_accel_ratio: float = 0.55
     include_midcap_corridor: bool = True
 
@@ -227,9 +237,9 @@ class BotConfig:
             max_h1_change_pct=_env_float("MAX_H1_CHANGE_PCT", 210.0, 40.0, 500.0),
             min_pair_age_minutes=_env_float("MIN_PAIR_AGE_MINUTES", 20.0, 0.0, 240.0),
             min_liquidity_usd=_env_float("MIN_LIQUIDITY_USD", 12_000.0, 5_000.0, 250_000.0),
-            min_vol_m5_usd=_env_float("MIN_VOL_M5_USD", 2_000.0, 500.0, 100_000.0),
-            min_vol_h1_usd=_env_float("MIN_VOL_H1_USD", 15_000.0, 2_000.0, 500_000.0),
-            min_turnover_h1_ratio=_env_float("MIN_TURNOVER_H1_RATIO", 0.25, 0.05, 5.0),
+            min_vol_m5_usd=_env_float("MIN_VOL_M5_USD", 8_000.0, 1_000.0, 100_000.0),
+            min_vol_h1_usd=_env_float("MIN_VOL_H1_USD", 55_000.0, 5_000.0, 500_000.0),
+            min_turnover_h1_ratio=_env_float("MIN_TURNOVER_H1_RATIO", 0.60, 0.05, 5.0),
             min_vol_m5_accel_ratio=_env_float("MIN_VOL_M5_ACCEL_RATIO", 0.55, 0.1, 3.0),
             include_midcap_corridor=_env_bool("INCLUDE_MIDCAP_CORRIDOR", True),
             enable_pumpportal_stream=_env_bool("ENABLE_PUMPPORTAL_STREAM", False),

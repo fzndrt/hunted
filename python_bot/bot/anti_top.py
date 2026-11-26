@@ -13,7 +13,7 @@ def find_corridor(
     projected_mc: float, include_midcap: bool
 ) -> Optional[EntryCorridor]:
     for corridor in ENTRY_CORRIDORS:
-        if corridor.corridor_id == "CORRIDOR_C_EXPANSION" and not include_midcap:
+        if corridor.corridor_id in {"CORRIDOR_C_EXPANSION", "CORRIDOR_D_VIRAL_BASE"} and not include_midcap:
             continue
         if corridor.min_mc <= projected_mc <= corridor.max_mc:
             return corridor
@@ -23,8 +23,8 @@ def find_corridor(
 def classify_red_zone_label(mc: float) -> str:
     if mc < 25_000:
         return "Red Zone (< $25K Micro-Cap)"
-    if mc > 390_000:
-        return "Late-Stage Top (> $390K)"
+    if mc > 850_000:
+        return "Late-Stage Top (> $850K)"
     return "Di Luar Koridor Entry"
 
 
@@ -71,6 +71,14 @@ def evaluate_anti_top(
     vol_m5_accel_ratio = (pair.vol_m5 / avg_5m_from_1h) if avg_5m_from_1h > 0 else 1.0
     is_daily_coin = age_minutes >= 20.0 * 60.0
 
+    # Deteksi Viral Velocity (v4): arus modal deras seperti $Zero / PERRO / 4CHAN
+    is_viral_velocity = (
+        (pair.vol_m5 >= 15_000.0 and pair.vol_h1 >= 120_000.0 and turnover_h1_ratio >= 0.70)
+        or (pair.vol_m5 >= 25_000.0 and pair.vol_h1 >= 180_000.0 and turnover_h1_ratio >= 0.50)
+    )
+    # Kontraksi volume sehat saat pullback: Vol5m >= $12K tidak boleh dianggap sekarat (seperti $Zero $50K/5m di 0.43x accel!)
+    is_pullback_contraction_ok = pair.vol_m5 >= 12_000.0
+
     # 1. Proyeksi Delay Eksekusi (default 22 detik) berbasis kecepatan momentum 5m
     positive_m5 = max(0.0, p_m5)
     drift_ratio = (positive_m5 / 100.0) * (cfg.reaction_delay_sec / 300.0) * 1.15
@@ -78,12 +86,25 @@ def evaluate_anti_top(
     projected_entry_mc = spot_mc * (1.0 + projected_drift_pct / 100.0)
 
     corridor = find_corridor(projected_entry_mc, cfg.include_midcap_corridor)
-    corridor_ok = corridor is not None
-    corridor_label = (
-        corridor.label if corridor else classify_red_zone_label(projected_entry_mc)
-    )
+    is_corridor_d = corridor is not None and corridor.corridor_id == "CORRIDOR_D_VIRAL_BASE"
 
-    if corridor:
+    # Corridor D ($390K–$850K) HANYA diizinkan jika memenuhi syarat ketat Viral Base Breakout
+    corridor_d_qualified = (
+        is_corridor_d
+        and pair.vol_h1 >= 250_000.0
+        and pair.vol_m5 >= 15_000.0
+        and liq_usd >= 40_000.0
+        and -3.5 <= p_m5 <= 18.0
+    )
+    corridor_ok = (corridor is not None) and ((not is_corridor_d) or corridor_d_qualified)
+    if is_corridor_d and not corridor_d_qualified:
+        corridor_label = "Late-Stage Top (> $390K tanpa Viral Base)"
+    else:
+        corridor_label = (
+            corridor.label if corridor else classify_red_zone_label(projected_entry_mc)
+        )
+
+    if corridor and corridor_ok:
         net_headroom_pct = (
             (corridor.ceiling_mc - projected_entry_mc) / projected_entry_mc * 100.0
             if projected_entry_mc > 0
@@ -92,24 +113,32 @@ def evaluate_anti_top(
     else:
         net_headroom_pct = 0.0
 
-    corridor_severity = (
-        "PASS"
-        if corridor_ok
-        else ("VETO" if projected_entry_mc < 25_000 or projected_entry_mc > 450_000 else "WAIT_DIP")
-    )
+    if corridor_ok:
+        corridor_severity = "PASS"
+    elif is_corridor_d and not corridor_d_qualified:
+        corridor_severity = "VETO"
+    elif projected_entry_mc < 25_000 or projected_entry_mc > 850_000:
+        corridor_severity = "VETO"
+    else:
+        corridor_severity = "WAIT_DIP"
+
     checks.append(
         GateCheck(
             id="entry_corridor",
             layer="ANTI_TOP",
-            label="Koridor Early-Entry PumpSwap & Zona Atas",
+            label="Koridor Early-Entry (A–D Viral Base) & Zona Atas",
             passed=corridor_ok,
             severity=corridor_severity,
             actual=f"Proj ${projected_entry_mc:,.0f} ({corridor_label})",
-            threshold="$25K–$92K | $92K–$210K" + (" | $210K–$390K" if cfg.include_midcap_corridor else ""),
+            threshold="$25K–$390K" + (" | D:$390K–$850K (Vol1h>=$250K, Liq>=$40K)" if cfg.include_midcap_corridor else ""),
             detail=(
                 f"Masuk {corridor_label} setelah kompensasi delay {cfg.reaction_delay_sec}s (+{projected_drift_pct:.1f}%)."
                 if corridor_ok
-                else f"Berada di {corridor_label} — tunggu pullback ke koridor aman."
+                else (
+                    f"DITOLAK: MC ${projected_entry_mc:,.0f} di atas $390K namun belum memenuhi syarat Viral Base (wajib Vol1h >= $250K, Vol5m >= $15K, Liq >= $40K, 5m <= +18%)."
+                    if is_corridor_d and not corridor_d_qualified
+                    else f"Berada di {corridor_label} — di luar koridor aman."
+                )
             ),
         )
     )
@@ -152,40 +181,53 @@ def evaluate_anti_top(
         )
     )
 
-    # 3. Parabolic Candle 5m/1h Cap (Adaptif Usia!) + Anti-Dead-Bounce Floor
-    # Koin muda (< 2 jam atau < 1.200 tx) dilarang dikejar jika 1h sudah > +115% (rawan beli puncak!)
+    # 3. Parabolic Candle 5m/1h Cap (v4: Viral Velocity menyerahkan uji pucuk vs pullback ke Layer 2B OHLCV!)
     is_proven_runner = age_minutes >= 120.0 and tx_24h >= 1_200
     effective_max_h1 = cfg.max_h1_change_pct if is_proven_runner else cfg.max_fresh_h1_change_pct
+    effective_max_m5 = 18.0 if is_corridor_d else cfg.max_m5_change_pct
     h1_floor = -12.0 if (is_daily_coin and p_m5 >= 1.5) else -10.0
 
     m5_falling = p_m5 < -3.5
     h1_falling = p_h1 < h1_floor
-    m5_too_hot = p_m5 > cfg.max_m5_change_pct
-    h1_too_hot = p_h1 > effective_max_h1
+    m5_too_hot = p_m5 > effective_max_m5
+    # Kunci v4: koin viral ($Zero di $244K/$267K dgn +740% 1h & Vol5m $50K-$110K) TIDAK langsung dibunuh oleh cap 1h kaku;
+    # melainkan diloloskan ke Layer 2B OHLCV 5m untuk membedakan Pullback/Base sehat vs Blow-Off Top!
+    h1_too_hot = (p_h1 > effective_max_h1) and (not is_viral_velocity)
     parabolic_ok = (not m5_falling) and (not h1_falling) and (not m5_too_hot) and (not h1_too_hot)
+
+    if parabolic_ok and is_viral_velocity and p_h1 > effective_max_h1:
+        parabolic_detail = (
+            f"Ledakan viral terdeteksi (1h {p_h1:+.0f}%, Vol5m ${pair.vol_m5:,.0f}, 5m {p_m5:+.1f}%) — "
+            "validasi pucuk vs pullback dialihkan ke struktur candle OHLCV 5m."
+        )
+    elif parabolic_ok:
+        parabolic_detail = "Kecepatan harga sehat (belum pucuk vertikal dan tidak sedang jatuh)."
+    elif m5_falling or h1_falling:
+        parabolic_detail = (
+            f"DITOLAK: Tren sedang jatuh/sekarat (5m {p_m5:+.1f}%, 1h {p_h1:+.1f}%) — jangan beli pisau jatuh."
+        )
+    else:
+        parabolic_detail = (
+            f"Sudah terlalu tinggi tanpa ledakan volume viral (+{p_h1:.0f}% 1h / +{p_m5:.0f}% 5m) — tunggu pullback sehat."
+        )
+
     checks.append(
         GateCheck(
             id="parabolic_cap",
             layer="ANTI_TOP",
-            label="Batas Pucuk Parabolik (Adaptif Usia) & Anti-Koin Jatuh",
+            label="Kontrol Kecepatan 5m/1h & Delegasi Viral ke OHLCV",
             passed=parabolic_ok,
             severity="PASS" if parabolic_ok else ("VETO" if (m5_falling or h1_falling) else "WAIT_DIP"),
-            actual=f"5m {p_m5:+.1f}% · 1h {p_h1:+.1f}%",
-            threshold=f"5m [-3.5%, +{cfg.max_m5_change_pct:.0f}%] · 1h [{h1_floor:.0f}%, +{effective_max_h1:.0f}%]",
-            detail=(
-                "Kecepatan harga sehat (belum pucuk vertikal dan tidak sedang jatuh)."
-                if parabolic_ok
-                else (
-                    f"DITOLAK: Tren sedang jatuh/sekarat (5m {p_m5:+.1f}%, 1h {p_h1:+.1f}%) — jangan beli pisau jatuh."
-                    if (m5_falling or h1_falling)
-                    else f"Sudah terlalu tinggi di puncak (+{p_h1:.0f}% 1h / +{p_m5:.0f}% 5m) — tunggu pullback sehat membentuk Higher-Low."
-                )
-            ),
+            actual=f"5m {p_m5:+.1f}% · 1h {p_h1:+.1f}%" + (" (VIRAL)" if is_viral_velocity else ""),
+            threshold=f"5m [-3.5%, +{effective_max_m5:.0f}%] · 1h <= +{effective_max_h1:.0f}% (atau Viral OHLCV)",
+            detail=parabolic_detail,
         )
     )
 
     # 4. Likuiditas Minimum & Rasio LP/MC (Anti-Thin Pool)
-    liq_ok = liq_usd >= cfg.min_liquidity_usd and liq_mc_ratio_pct >= 8.0
+    min_liq_req = 40_000.0 if is_corridor_d else cfg.min_liquidity_usd
+    min_liq_ratio_req = 7.0 if is_corridor_d else 8.0
+    liq_ok = liq_usd >= min_liq_req and liq_mc_ratio_pct >= min_liq_ratio_req
     checks.append(
         GateCheck(
             id="liquidity_floor",
@@ -194,7 +236,7 @@ def evaluate_anti_top(
             passed=liq_ok,
             severity="PASS" if liq_ok else "VETO",
             actual=f"${liq_usd:,.0f} ({liq_mc_ratio_pct:.1f}% MC)",
-            threshold=f">= ${cfg.min_liquidity_usd:,.0f} & >= 8.0% MC",
+            threshold=f">= ${min_liq_req:,.0f} & >= {min_liq_ratio_req:.1f}% MC",
             detail=(
                 "Pool cukup tebal untuk menampung eksekusi masuk & keluar."
                 if liq_ok
@@ -208,24 +250,27 @@ def evaluate_anti_top(
     vol_wake_5m_ratio = (pair.vol_m5 / avg_5m_vol_24h) if avg_5m_vol_24h > 0 else 0.0
     vol_h1_share_24h_pct = (pair.vol_h1 / pair.vol_h24 * 100.0) if pair.vol_h24 > 0 else 0.0
     has_volume_wakeup = (
-        (pair.vol_m5 >= 1_200.0 and vol_wake_5m_ratio >= 2.5)
-        or (pair.vol_h1 >= 6_000.0 and vol_h1_share_24h_pct >= 25.0)
+        (pair.vol_m5 >= 2_000.0 and vol_wake_5m_ratio >= 2.5)
+        or (pair.vol_h1 >= 12_000.0 and vol_h1_share_24h_pct >= 25.0)
     )
 
-    # 6. LIVE DEMAND VELOCITY, ANTI-VOLUME-DYING & ANTI-WASH-BOT 5m
-    req_vol_m5 = (
-        min(cfg.min_vol_m5_usd, 1_400.0)
-        if (age_minutes >= 720.0 and has_volume_wakeup)
-        else cfg.min_vol_m5_usd
-    )
+    # 6. LIVE DEMAND VELOCITY (Dinaikkan di v4!), PULLBACK CONTRACTION EXEMPTION & ANTI-WASH-BOT 5m
+    is_aged_wakeup = age_minutes >= 720.0 and has_volume_wakeup
+    req_vol_m5 = 2_000.0 if is_aged_wakeup else cfg.min_vol_m5_usd
+    req_vol_h1 = 12_000.0 if is_aged_wakeup else cfg.min_vol_h1_usd
+    req_turnover_h1 = 0.15 if is_aged_wakeup else cfg.min_turnover_h1_ratio
+
     vol_m5_ok = pair.vol_m5 >= req_vol_m5 and tx_5m >= 8
     vol_h1_ok = (age_minutes < 15.0) or (
-        (pair.vol_h1 >= cfg.min_vol_h1_usd and turnover_h1_ratio >= cfg.min_turnover_h1_ratio)
-        or (age_minutes >= 720.0 and has_volume_wakeup and pair.vol_h1 >= 6_500.0 and turnover_h1_ratio >= 0.12)
+        pair.vol_h1 >= req_vol_h1 and turnover_h1_ratio >= req_turnover_h1
     )
-    # Anti-Momentum-Death: cegah masuk koin yang volumenya sudah sekarat dibanding rata-rata 1h-nya!
-    vol_dying = (age_minutes >= 25.0) and (pair.vol_h1 > 0) and (vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio)
-    # Naikkan floor anti-wash-bot ke $22/tx (memblokir micro-bot $9–$15/tx seperti NORFEATH/Pompompurin)
+    # Anti-Momentum-Death (v4): kecualikan kontraksi volume sehat saat pullback jika Vol5m absolut >= $12K!
+    vol_dying = (
+        (age_minutes >= 25.0)
+        and (pair.vol_h1 > 0)
+        and (vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio)
+        and (not is_pullback_contraction_ok)
+    )
     wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < 22.0
     sideways_churn = (not is_daily_coin) and turnover_h1_ratio >= 1.8 and p_h1 < 8.0
 
@@ -248,7 +293,7 @@ def evaluate_anti_top(
         )
     elif vol_dying:
         flow_detail = (
-            f"DITOLAK: Volume 5m sedang sekarat/turun drastis (accel {vol_m5_accel_ratio:.2f}x dari rata-rata 1h — momentum habis)."
+            f"DITOLAK: Volume 5m sedang sekarat/turun drastis (${pair.vol_m5:,.0f}, accel {vol_m5_accel_ratio:.2f}x dari rata-rata 1h — momentum habis)."
         )
     elif sideways_churn:
         flow_detail = (
@@ -256,30 +301,34 @@ def evaluate_anti_top(
         )
     elif not vol_m5_ok:
         flow_detail = (
-            f"DITOLAK: Permintaan 5m terlalu lemah (${pair.vol_m5:,.0f} / {tx_5m} tx) — rawan langsung mati."
+            f"DITOLAK: Permintaan 5m terlalu lemah (${pair.vol_m5:,.0f} < ${req_vol_m5:,.0f} / {tx_5m} tx) — rawan langsung mati."
         )
     elif not vol_h1_ok:
         flow_detail = (
-            f"DITOLAK: Volume/perputaran 1h lesu (${pair.vol_h1:,.0f}, turnover {turnover_h1_ratio:.2f}x MC)."
+            f"DITOLAK: Arus modal 1h terlalu lemah (${pair.vol_h1:,.0f} < ${req_vol_h1:,.0f}, turnover {turnover_h1_ratio:.2f}x < {req_turnover_h1:.2f}x MC)."
         )
     elif not tx_count_ok or not ticket_1h_ok:
         flow_detail = (
             f"DITOLAK: Aktivitas organik kurang ({tx_24h} tx, avg 1h ${avg_ticket_1h:.0f}/tx)."
         )
+    elif is_pullback_contraction_ok and vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio:
+        flow_detail = (
+            f"Kontraksi volume pullback sehat: Vol5m tetap tebal ${pair.vol_m5:,.0f} (accel {vol_m5_accel_ratio:.2f}x · Turn1h {turnover_h1_ratio:.2f}x MC)."
+        )
     else:
         flow_detail = (
-            f"Demand organik hidup: Vol5m ${pair.vol_m5:,.0f} (accel {vol_m5_accel_ratio:.2f}x, ${avg_ticket_5m:.0f}/tx) · Turn1h {turnover_h1_ratio:.2f}x."
+            f"Demand viral/organik kuat: Vol5m ${pair.vol_m5:,.0f} (accel {vol_m5_accel_ratio:.2f}x, ${avg_ticket_5m:.0f}/tx) · Turn1h {turnover_h1_ratio:.2f}x."
         )
 
     checks.append(
         GateCheck(
             id="orderflow_quality",
             layer="ANTI_TOP",
-            label="Kecepatan Demand, Akselerasi Vol & Anti-Wash-Bot",
+            label="Kecepatan Arus Modal, Kontraksi Pullback & Anti-Wash-Bot",
             passed=flow_ok,
             severity="PASS" if flow_ok else "VETO",
-            actual=f"5m ${pair.vol_m5:,.0f} ({vol_m5_accel_ratio:.2f}x · ${avg_ticket_5m:.0f}/tx) · 1h ${pair.vol_h1:,.0f}",
-            threshold=f"5m>=${req_vol_m5:,.0f}, accel>={cfg.min_vol_m5_accel_ratio:.2f}x, >=$22/tx",
+            actual=f"5m ${pair.vol_m5:,.0f} ({vol_m5_accel_ratio:.2f}x · ${avg_ticket_5m:.0f}/tx) · 1h ${pair.vol_h1:,.0f} ({turnover_h1_ratio:.2f}x)",
+            threshold=f"5m>=${req_vol_m5:,.0f}, 1h>=${req_vol_h1:,.0f}, Turn>={req_turnover_h1:.2f}x, >=$22/tx",
             detail=flow_detail,
         )
     )
@@ -316,7 +365,7 @@ def evaluate_anti_top(
             )
         )
     elif p_m5 < 0.0:
-        siphon_ok = buy_ratio_5m >= 52.0 and buy_ratio_1h >= 49.0
+        siphon_ok = buy_ratio_5m >= 50.0 and buy_ratio_1h >= 49.0
         siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
         siphon_detail = (
             "Pullback ringan masih diserap buyer."
@@ -324,7 +373,7 @@ def evaluate_anti_top(
             else "Harga 5m minus disertai dominasi jual — tunggu buyer kembali memegang kendali."
         )
     else:
-        siphon_ok = buy_ratio_5m >= 49.0 and buy_ratio_1h >= 49.0
+        siphon_ok = buy_ratio_5m >= 48.0 and buy_ratio_1h >= 49.0
         siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
         siphon_detail = (
             "Dominasi buyer sehat tanpa pola distribusi diam-diam."
@@ -340,7 +389,7 @@ def evaluate_anti_top(
             passed=siphon_ok,
             severity=siphon_sev,
             actual=f"5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% · 6h {buy_ratio_6h:.0f}% buy",
-            threshold=">=49% buy (atau >=42% Whale Absorption), 6h>=47% & anti-siphon",
+            threshold=">=48% buy (atau >=42% Whale Absorption), 6h>=47% & anti-siphon",
             detail=siphon_detail,
         )
     )
@@ -393,7 +442,7 @@ def evaluate_anti_top(
         passed=passed,
         wait_dip_only=wait_dip_only,
         checks=tuple(checks),
-        corridor_id=corridor.corridor_id if corridor else None,
+        corridor_id=corridor.corridor_id if (corridor and corridor_ok) else None,
         corridor_label=corridor_label,
         spot_mc=round(spot_mc, 2),
         projected_entry_mc=round(projected_entry_mc, 2),
@@ -419,4 +468,7 @@ def evaluate_anti_top(
         whale_absorption=whale_absorption,
         vol_m5_accel_ratio=round(vol_m5_accel_ratio, 2),
         buy_ratio_6h_pct=round(buy_ratio_6h, 1),
+        is_viral_velocity=is_viral_velocity,
+        is_pullback_contraction_ok=is_pullback_contraction_ok,
+        is_corridor_d_viral_base=corridor_d_qualified,
     )

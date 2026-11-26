@@ -22,21 +22,21 @@ Mendukung penuh alur **GitHub → Vercel Serverless → Telegram Bot** (termasuk
 ├── main.py                             # Entrypoint worker 24/7 opsional jika kelak pindah ke VPS
 ├── bot/
 │   ├── __init__.py
-│   ├── config.py                       # Allowlist Hard-Quote Mint, 3 Koridor, & deteksi env Vercel
-│   ├── models.py                       # Dataclass terstruktur seluruh 5 layer + StructureResult
-│   ├── security.py                     # Layer 1: Veto keamanan biner (RugCheck, Token-2022, Dynamic AMM Pareto, LP)
-│   ├── anti_top.py                     # Layer 2A: Koridor, Survival Age >=20m, Vol Accel, 6h Buy & Adaptive 1h Cap
-│   ├── structure.py                    # Layer 2B: OHLCV 5m/1h (Anti-Blow-Off Top & Daily Consolidation Akumulasi vs Distribusi)
+│   ├── config.py                       # Allowlist Hard-Quote Mint, 4 Koridor (A–D Viral Base), & deteksi env Vercel
+│   ├── models.py                       # Dataclass terstruktur seluruh 5 layer + Bukti Bahan Bakar v4
+│   ├── security.py                     # Layer 1: RugCheck, Token-2022, Dynamic AMM Vault, Smart Viral Pareto & Holder Velocity
+│   ├── anti_top.py                     # Layer 2A: Corridor A–D, Viral Velocity OHLCV delegation, Pullback Contraction & 6h Buy
+│   ├── structure.py                    # Layer 2B: OHLCV 5m/1h (Pullback Higher-Low Reclaim, Anti-Blow-Off & Daily Consolidation)
 │   ├── execution.py                    # Layer 3: Jupiter 0.1 SOL + 1.0 SOL fail-closed round-trip
-│   ├── scoring.py                      # Layer 4: Additive Score 0–100 (5 pilar) & Trade Plan R:R
+│   ├── scoring.py                      # Layer 4: Additive Score 0–100 (5 pilar + Multi-Pool Smart LP) & Trade Plan R:R
 │   ├── exit_guard.py                   # Layer 5: Evaluasi Hard SL, Breakeven, Trailing & AMM LP √(MC/MC0)
 │   ├── storage.py                      # Persistensi otomatis: Upstash Redis Cloud (Vercel) / SQLite WAL (VPS)
-│   ├── feeds.py                        # 7-Feed discovery organik anti-429 (Gecko 5m/1h/6h + PumpSwap/Raydium/CTO)
-│   ├── pipeline.py                     # Orkestrator audit paralel Layer 1–4 + slot khusus Daily Consolidation
+│   ├── feeds.py                        # 7-Feed organik anti-429 (Gecko 5m/1h/6h + PumpSwap/Raydium/CTO) + Multi-Pool count
+│   ├── pipeline.py                     # Orkestrator audit paralel Layer 1–4 + slot khusus Daily Consolidation & Corridor D
 │   ├── pumpportal_stream.py            # WebSocket PumpPortal (khusus VPS)
-│   └── telegram_notifier.py            # Formatter alert HTML aman & command handler bersama
+│   └── telegram_notifier.py            # Formatter alert HTML + 5 Bukti Bahan Bakar Kenaikan & command handler bersama
 └── tests/
-    └── test_engine.py                  # Unit test aturan anti-rugi, OHLCV Anti-Pucuk, Daily Consolidation & Vercel auth
+    └── test_engine.py                  # Unit test replay $Zero, koin lemah, OHLCV Anti-Pucuk, Daily Consolidation & Vercel auth
 ```
 
 ---

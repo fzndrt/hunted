@@ -72,6 +72,8 @@ class PairSnapshot:
     price_change_h6: float = 0.0
     buys_h6: int = 0
     sells_h6: int = 0
+    pool_count: int = 1
+    is_boosted: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,9 @@ class SecurityResult:
     is_meteora_nft_lp: bool
     pareto_status: str
     total_holders: int = 0
+    holders_per_min: float = 0.0
+    active_markets_count: int = 1
+    clean_viral_pareto: bool = False
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,9 @@ class AntiTopResult:
     whale_absorption: bool = False
     vol_m5_accel_ratio: float = 1.0
     buy_ratio_6h_pct: float = 50.0
+    is_viral_velocity: bool = False
+    is_pullback_contraction_ok: bool = False
+    is_corridor_d_viral_base: bool = False
 
 
 @dataclass(frozen=True)

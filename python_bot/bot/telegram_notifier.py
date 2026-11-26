@@ -27,12 +27,17 @@ def format_entry_alert(audit: AuditResult) -> str:
 
     age_days = at.age_minutes / 1440.0
     age_label = f"{age_days:.1f} hari" if age_days >= 1.0 else (f"{at.age_minutes / 60.0:.1f} jam" if at.age_minutes >= 60.0 else f"{at.age_minutes:.0f} menit")
+    total_pools = max(int(p.pool_count or 1), int(sec.active_markets_count or 1))
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         title_line = f"💎 <b>DAILY CONSOLIDATION BREAKOUT — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+    elif at.is_corridor_d_viral_base:
+        title_line = f"🚀 <b>VIRAL BASE BREAKOUT (CORRIDOR D) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+    elif st is not None and st.regime == "PULLBACK_RECLAIM" and at.is_viral_velocity:
+        title_line = f"🔥 <b>VIRAL PULLBACK RECLAIM — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_sleeper_revival:
         title_line = f"⚡ <b>SLEEPER REVIVAL (PRE-ATH) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     else:
-        title_line = f"🟢 <b>ENTRY READY (OHLCV OK) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>ENTRY READY (v4 OHLCV OK) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
 
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         chart_line = (
@@ -41,26 +46,32 @@ def format_entry_alert(audit: AuditResult) -> str:
         )
     elif st is not None and st.ohlcv_verified:
         chart_line = (
-            f"• Chart 5m ({_esc(st.regime)}): GreenVol <b>{st.green_vol_share_pct:.0f}%</b> · "
-            f"Wick <code>{st.upper_wick_pct:.0f}%</code> · DD Peak <code>-{st.drawdown_from_peak_pct:.1f}%</code> · HL <b>{'Ya' if st.higher_low_intact else 'Flat'}</b>"
+            f"• Chart 5m ({_esc(st.regime)}): HL <b>{'Utuh' if st.higher_low_intact else 'Datar'}</b> · "
+            f"DD Peak <code>-{st.drawdown_from_peak_pct:.1f}%</code> · Wick <code>{st.upper_wick_pct:.0f}%</code> · GreenVol <b>{st.green_vol_share_pct:.0f}%</b>"
         )
     else:
         chart_line = f"• Orderflow: 5m Accel <b>{at.vol_m5_accel_ratio:.2f}x</b> · 6h Buy <b>{at.buy_ratio_6h_pct:.0f}%</b>"
+
+    boost_label = "Tanpa Paid Boost (Organik)" if not p.is_boosted else "Ada Paid Boost"
+    pool_label = f"{total_pools} pool aktif (Smart LP)" if total_pools >= 2 else "1 pool utama"
 
     lines = [
         title_line,
         f"Nama: {_esc(p.name)} | DEX: <code>{_esc(p.dex_id)}</code> | Quote: <b>{_esc(sec.hard_quote_symbol)}</b> | Usia: <b>{age_label}</b>",
         f"Mint: <code>{_esc(p.mint)}</code>",
         "",
+        "<b>🔥 5 Bukti Bahan Bakar Kenaikan:</b>",
+        f"1. Adopsi Holder: <b>{sec.total_holders:,} dompet</b> (<b>{sec.holders_per_min:.1f} holder/menit</b>)",
+        f"2. Arus Modal: Vol5m <b>${p.vol_m5:,.0f}</b> (${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> (<b>{at.turnover_h1_ratio:.2f}x</b> MC)"
+        + (" · 🐋 <b>Whale Absorption</b>" if at.whale_absorption else ""),
+        f"3. Struktur Chart: {chart_line[2:]}",
+        f"4. Likuiditas & Smart LP: <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.0f}% MC) · <b>{pool_label}</b>",
+        f"5. Organik & Supply: <b>{boost_label}</b> · Dev <code>{sec.dev_pct}%</code> · Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code>",
+        "",
         f"• Spot MC: <b>${at.spot_mc:,.0f}</b> → Proyeksi (+delay): <b>${at.projected_entry_mc:,.0f}</b>",
         f"• Koridor: {_esc(at.corridor_label)} (Headroom <b>+{at.net_headroom_pct:.1f}%</b>)",
         f"• 5m / 1h / 6h / 24h: <code>{at.p_m5:+.1f}%</code> / <code>{at.p_h1:+.1f}%</code> / <code>{at.p_h6:+.1f}%</code> / <code>{at.p_h24:+.1f}%</code>",
-        f"• Demand: Vol5m <b>${p.vol_m5:,.0f}</b> (<b>{at.vol_m5_accel_ratio:.2f}x</b> · ${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> (<b>{at.turnover_h1_ratio:.2f}x</b> MC)"
-        + (" · 🐋 <b>Whale Absorption</b>" if at.whale_absorption else ""),
-        chart_line,
-        f"• LP: <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.0f}% MC) | Buy 5m/1h/6h: <code>{at.buy_ratio_5m_pct:.0f}%/{at.buy_ratio_1h_pct:.0f}%/{at.buy_ratio_6h_pct:.0f}%</code>",
-        f"• Holder: <b>{sec.total_holders:,}</b> · Pareto Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code> · Dev <code>{sec.dev_pct}%</code>",
-        f"• Jupiter: 0.1S <code>-{ex.round_trip_loss_01_sol_pct}%</code> | 1.0S <code>-{ex.depth_loss_1_sol_pct}%</code>",
+        f"• Buy 5m/1h/6h: <code>{at.buy_ratio_5m_pct:.0f}%/{at.buy_ratio_1h_pct:.0f}%/{at.buy_ratio_6h_pct:.0f}%</code> | Jupiter: 0.1S <code>-{ex.round_trip_loss_01_sol_pct}%</code> · 1.0S <code>-{ex.depth_loss_1_sol_pct}%</code>",
     ]
     if plan:
         lines.extend(
@@ -188,12 +199,12 @@ async def handle_telegram_command(
             client,
             "\n".join(
                 [
-                    "<b>Corridor Desk v2 — Smart Money Radar (5-Layer + Pre-ATH Revival)</b>",
+                    "<b>Corridor Desk v4 — Viral Velocity, OHLCV Pullback &amp; Daily Consolidation</b>",
                     f"Runtime: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS Worker'}</code> | Storage: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     "",
                     "<b>Daftar Perintah:</b>",
-                    "• <code>/scan</code> — Pindai 8 feed Solana sekarang (Fresh + Sleeper Revival)",
-                    "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 4 layer sebelum entry manual",
+                    "• <code>/scan</code> — Pindai 7 feed organik Solana (Intraday Viral + Konsolidasi Harian)",
+                    "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 5 layer + OHLCV sebelum entry manual",
                     "• <code>/track &lt;MINT&gt; &lt;ENTRY_MC&gt; &lt;MODAL_USD&gt;</code> — Masukkan ke Exit Guard",
                     "• <code>/positions</code> — Lihat PnL &amp; AMM LP Retention posisi aktif",
                     "• <code>/close &lt;MINT&gt;</code> — Hapus posisi dari Exit Guard",
@@ -210,12 +221,13 @@ async def handle_telegram_command(
             client,
             "\n".join(
                 [
-                    "<b>Status Bot Corridor Desk v2</b>",
+                    "<b>Status Bot Corridor Desk v4</b>",
                     f"• Lingkungan: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS'}</code>",
                     f"• Penyimpanan: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     f"• Posisi Aktif Exit Guard: <b>{len(positions)}</b>",
                     f"• Ambang Skor Minimal: <b>{cfg.min_score}/100</b> | Delay: <b>{cfg.reaction_delay_sec}s</b>",
-                    f"• Koridor C ($220K–$335K): <b>{'Aktif' if cfg.include_midcap_corridor else 'Nonaktif'}</b>",
+                    f"• Intraday Min Vol: <b>${cfg.min_vol_m5_usd:,.0f}/5m</b> · <b>${cfg.min_vol_h1_usd:,.0f}/1h</b>",
+                    f"• Koridor C &amp; D Viral Base ($210K–$850K): <b>{'Aktif' if cfg.include_midcap_corridor else 'Nonaktif'}</b>",
                 ]
             ),
             chat_id,

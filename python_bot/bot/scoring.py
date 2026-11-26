@@ -78,7 +78,7 @@ def score_and_finalize(
     cfg: BotConfig,
     structure: Optional[StructureResult] = None,
 ) -> AuditResult:
-    # Pilar 1: Keamanan, Distribusi & Basis Holder (25 poin)
+    # Pilar 1: Keamanan, Distribusi & Kecepatan Adopsi Holder (25 poin)
     p1 = 0
     if security.passed:
         p1 += 13
@@ -90,24 +90,26 @@ def score_and_finalize(
             p1 += 3
         elif (security.dev_pct or 100.0) <= 2.0:
             p1 += 2
-        if security.total_holders >= 1_500:
+        if security.total_holders >= 1_500 or security.holders_per_min >= 10.0:
             p1 += 4
-        elif security.total_holders >= 400:
-            p1 += 2
-        elif security.total_holders >= 150:
+        elif security.total_holders >= 400 or security.holders_per_min >= 4.0:
+            p1 += 3
+        elif security.total_holders >= 220:
             p1 += 1
     else:
         p1 = sum(2 for c in security.checks if c.passed)
         p1 = min(p1, 10)
 
-    # Pilar 2: Posisi Entry & Headroom (25 poin)
+    # Pilar 2: Posisi Entry (Corridor A–D) & Headroom (25 poin)
     p2 = 0
     if anti_top.corridor_id == "CORRIDOR_A_EARLY":
         p2 += 14
     elif anti_top.corridor_id == "CORRIDOR_B_POST100K":
         p2 += 13
     elif anti_top.corridor_id == "CORRIDOR_C_EXPANSION":
-        p2 += 11
+        p2 += 12
+    elif anti_top.corridor_id == "CORRIDOR_D_VIRAL_BASE":
+        p2 += 12
     if anti_top.net_headroom_pct >= 35.0:
         p2 += 11
     elif anti_top.net_headroom_pct >= 25.0:
@@ -115,19 +117,27 @@ def score_and_finalize(
     elif anti_top.net_headroom_pct >= cfg.min_net_headroom_pct:
         p2 += 6
 
-    # Pilar 3: Demand Velocity, Akselerasi Vol & Whale Absorption (20 poin)
+    # Pilar 3: Viral Demand Velocity, Kontraksi Pullback & Whale Absorption (20 poin)
     p3 = 0
-    if 1.0 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
+    if 0.0 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
         p3 += 6
-    elif -2.0 <= anti_top.p_m5 < 1.0:
+    elif -3.5 <= anti_top.p_m5 < 0.0:
         p3 += 4
     if anti_top.buy_ratio_5m_pct >= 55.0 or anti_top.whale_absorption:
         p3 += 5
-    elif anti_top.buy_ratio_5m_pct >= 49.0:
+    elif anti_top.buy_ratio_5m_pct >= 48.0:
         p3 += 4
-    if anti_top.vol_m5_accel_ratio >= 1.15 or anti_top.turnover_h1_ratio >= 1.0:
+    if (
+        anti_top.is_viral_velocity
+        or anti_top.vol_m5_accel_ratio >= 1.15
+        or anti_top.turnover_h1_ratio >= 1.0
+    ):
         p3 += 5
-    elif anti_top.vol_m5_accel_ratio >= 0.75 or anti_top.turnover_h1_ratio >= 0.45:
+    elif (
+        anti_top.is_pullback_contraction_ok
+        or anti_top.vol_m5_accel_ratio >= 0.75
+        or anti_top.turnover_h1_ratio >= 0.45
+    ):
         p3 += 3
     elif anti_top.turnover_h1_ratio >= cfg.min_turnover_h1_ratio:
         p3 += 2
@@ -151,15 +161,16 @@ def score_and_finalize(
             p4 += 6
         else:
             p4 += 4
-        if anti_top.liq_mc_ratio_pct >= 16.0:
+        if anti_top.liq_mc_ratio_pct >= 14.0:
             p4 += 4
-        elif anti_top.liq_mc_ratio_pct >= 11.0:
+        elif anti_top.liq_mc_ratio_pct >= 9.0:
             p4 += 2
 
-    # Pilar 5: Struktur Chart OHLCV / Konsolidasi Harian & Feed Organik (10 poin)
+    # Pilar 5: Struktur Chart OHLCV, Multi-Pool Smart LP & Organik (10 poin)
     from .config import ORGANIC_FEED_SOURCES
 
     organic_feeds_count = sum(1 for s in pair.feed_sources if s in ORGANIC_FEED_SOURCES)
+    total_pools = max(int(pair.pool_count or 1), int(security.active_markets_count or 1))
     p5 = 0
     if structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         p5 += 5
@@ -167,7 +178,7 @@ def score_and_finalize(
         p5_summary = f"DAILY BREAKOUT ({age_days:.1f}hri · Box {structure.base_range_pct:.0f}% · GreenVol {structure.green_vol_share_pct:.0f}%)"
     elif structure is not None and structure.passed and structure.ohlcv_verified:
         p5 += 5
-        p5_summary = f"{structure.regime} · GreenVol {structure.green_vol_share_pct:.0f}% · {organic_feeds_count} organik"
+        p5_summary = f"{structure.regime} · {total_pools} pool · {organic_feeds_count} organik"
     elif anti_top.is_sleeper_revival:
         p5 += 5
         age_days = anti_top.age_minutes / 1440.0
@@ -183,20 +194,31 @@ def score_and_finalize(
             p5 += 3
         else:
             p5 += 1
-        p5_summary = f"Usia {anti_top.age_minutes:.0f}m · {organic_feeds_count} feed organik"
-    p5 += min(5, organic_feeds_count * 2 + (1 if organic_feeds_count > 0 else 0))
+        p5_summary = f"Usia {anti_top.age_minutes:.0f}m · {total_pools} pool · {organic_feeds_count} organik"
+
+    organic_pts = organic_feeds_count * 2 + (1 if organic_feeds_count > 0 else 0)
+    if total_pools >= 2:
+        organic_pts += 1
+    if not pair.is_boosted:
+        organic_pts += 1
+    p5 += min(5, organic_pts)
 
     pillars = (
-        PillarScore("Keamanan & Pareto", p1, 25, f"{security.pareto_status} · {security.total_holders:,}H"),
+        PillarScore(
+            "Keamanan & Adopsi",
+            p1,
+            25,
+            f"{security.pareto_status} · {security.total_holders:,}H ({security.holders_per_min:.1f}/m)",
+        ),
         PillarScore("Koridor & Headroom", p2, 25, f"Net +{anti_top.net_headroom_pct:.1f}%"),
         PillarScore(
-            "Demand & Akselerasi",
+            "Viral Demand & Flow",
             p3,
             20,
-            f"5m {anti_top.p_m5:+.1f}% · Accel {anti_top.vol_m5_accel_ratio:.2f}x",
+            f"5m ${pair.vol_m5:,.0f} · Turn1h {anti_top.turnover_h1_ratio:.2f}x",
         ),
         PillarScore("Likuiditas & Jupiter", p4, 20, execution.status),
-        PillarScore("Struktur Chart & Feed", p5, 10, p5_summary),
+        PillarScore("Chart OHLCV & Smart LP", p5, 10, p5_summary),
     )
     total_score = sum(p.score for p in pillars)
 

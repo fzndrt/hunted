@@ -74,9 +74,11 @@ def _evaluate_intraday_ohlcv(
         # Fallback ketat berbasis snapshot ketika OHLCV tidak tersedia (anti-chase pucuk)
         safe_snapshot = (
             anti_top.age_minutes >= max(cfg.min_pair_age_minutes, 25.0)
-            and anti_top.vol_m5_accel_ratio >= 0.65
-            and anti_top.p_h1 <= cfg.max_fresh_h1_change_pct
             and anti_top.p_m5 >= -1.0
+            and (
+                (anti_top.is_viral_velocity and pair.vol_m5 >= 15_000.0)
+                or (anti_top.vol_m5_accel_ratio >= 0.65 and anti_top.p_h1 <= cfg.max_fresh_h1_change_pct)
+            )
         )
         checks.append(
             GateCheck(
@@ -85,8 +87,8 @@ def _evaluate_intraday_ohlcv(
                 label="Verifikasi Struktur Candle 5m (Fallback)",
                 passed=safe_snapshot,
                 severity="PASS" if safe_snapshot else "WAIT_DIP",
-                actual=f"OHLCV N/A · accel {anti_top.vol_m5_accel_ratio:.2f}x · 1h {anti_top.p_h1:+.0f}%",
-                threshold="OHLCV 5m >= 4 candle (atau usia>=25m, accel>=0.65x, 1h<=115%)",
+                actual=f"OHLCV N/A · Vol5m ${pair.vol_m5:,.0f} · accel {anti_top.vol_m5_accel_ratio:.2f}x · 1h {anti_top.p_h1:+.0f}%",
+                threshold="OHLCV 5m >= 4 candle (atau viral >=$15K/5m / accel>=0.65x)",
                 detail=(
                     "Data candle 5m sementara kosong, namun profil momentum snapshot masih terukur."
                     if safe_snapshot
@@ -118,20 +120,24 @@ def _evaluate_intraday_ohlcv(
     )
 
     # 1. Deteksi Blow-Off Upper Wick Rejection (pucuk tertolak sniper/whale)
-    recent_3 = candles_5m[-3:]
+    # Catatan v4: cek wick pada 2 candle terbaru agar pullback sehat 15 menit lalu (-40% yg sudah reclaim hijau) tidak salah diveto!
+    recent_2 = candles_5m[-2:]
     meaningful_wicks = [
         _upper_wick_ratio(c)
-        for c in recent_3
+        for c in recent_2
         if c[3] > 0 and ((c[2] - c[3]) / c[3]) >= 0.035
     ]
     max_recent_wick_pct = (max(meaningful_wicks) * 100.0) if meaningful_wicks else 0.0
-    latest_o, _, _, _, latest_c, _ = candles_5m[-1]
+    _, latest_o, _, _, latest_c, _ = candles_5m[-1]
     latest_red_dump_pct = ((latest_c - latest_o) / latest_o * 100.0) if latest_o > 0 else 0.0
 
+    # Pullback sehat hingga -48% diperbolehkan JIKA candle terakhir sudah mulai stabil/hijau (tidak sedang jatuh merah)
+    deep_crash_dump = drawdown_from_peak_pct >= 52.0
     blowoff_wick_veto = (
         (max_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
         or (drawdown_from_peak_pct >= 24.0 and latest_red_dump_pct <= -3.0)
         or (latest_red_dump_pct <= -8.0)
+        or deep_crash_dump
     )
     checks.append(
         GateCheck(
@@ -141,11 +147,11 @@ def _evaluate_intraday_ohlcv(
             passed=not blowoff_wick_veto,
             severity="PASS" if not blowoff_wick_veto else "VETO",
             actual=f"Wick atas {max_recent_wick_pct:.0f}% · DD dr peak -{drawdown_from_peak_pct:.1f}%",
-            threshold="Wick < 48% di pucuk & tidak ada candle dump >= -8%",
+            threshold="Wick < 48% di pucuk, DD <= -52% & tidak ada candle dump >= -8%",
             detail=(
                 "Struktur candle 5m bersih tanpa jarum penolakan pucuk (blow-off top)."
                 if not blowoff_wick_veto
-                else f"DITOLAK: Terdeteksi pucuk blow-off / penolakan keras (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
+                else f"DITOLAK: Terdeteksi pucuk blow-off / dump keras (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
             ),
         )
     )
@@ -161,13 +167,14 @@ def _evaluate_intraday_ohlcv(
     med_prior_vol = median(prior_vols) if prior_vols else recent_2_avg_vol
     vol_expansion = (vols[-1] / med_prior_vol) if med_prior_vol > 0 else 1.0
 
-    # Jika harga sudah melesat > +65% 1h dan masih di dekat puncak (DD <= 15%),
-    # namun volume 2 candle terakhir sudah anjlok < 32% dari candle puncaknya -> Bensin Habis!
+    # Jika harga masih duduk di dekat puncak (DD <= 15%) dan volume anjlok < 32% peak candle
+    # (kecuali volume absolut 5m masih deras >= $25K pada fase pause viral) -> Bensin Habis!
     vol_exhaustion_top = (
         anti_top.p_h1 >= 65.0
         and drawdown_from_peak_pct <= 15.0
         and recent_to_peak_ratio < 0.32
         and vol_expansion < 1.15
+        and pair.vol_m5 < 25_000.0
     )
     checks.append(
         GateCheck(
@@ -177,7 +184,7 @@ def _evaluate_intraday_ohlcv(
             passed=not vol_exhaustion_top,
             severity="PASS" if not vol_exhaustion_top else "VETO",
             actual=f"Vol/Peak {recent_to_peak_ratio * 100:.0f}% · Ekspansi {vol_expansion:.2f}x",
-            threshold="Vol terbaru >= 32% peak candle saat extended",
+            threshold="Vol terbaru >= 32% peak candle saat extended (atau >= $25K/5m)",
             detail=(
                 f"Volume 5m masih terjaga/ekspansi ({recent_to_peak_ratio * 100:.0f}% dari puncak)."
                 if not vol_exhaustion_top
@@ -202,7 +209,19 @@ def _evaluate_intraday_ohlcv(
     green_v6 = sum(c[5] for c in last_6 if c[4] >= c[1])
     green_vol_share_pct = (green_v6 / total_v6 * 100.0) if total_v6 > 0 else 50.0
 
-    structure_broken = support_broken or (not higher_low_intact and green_vol_share_pct < 42.0)
+    # Pada Pullback Reclaim viral (seperti $Zero di -40%), 2 candle sebelumnya wajar merah saat koreksi;
+    # selama support utuh, Higher Low utuh, dan candle terbaru sudah reclaim hijau -> sehat!
+    is_healthy_pullback_reclaim = (
+        higher_low_intact
+        and (not support_broken)
+        and 8.0 <= drawdown_from_peak_pct <= 48.0
+        and latest_c >= latest_o
+        and max_recent_wick_pct < 42.0
+    )
+
+    structure_broken = support_broken or (
+        (not higher_low_intact) and (green_vol_share_pct < 42.0) and (not is_healthy_pullback_reclaim)
+    )
     checks.append(
         GateCheck(
             id="intraday_higher_low",
@@ -213,9 +232,13 @@ def _evaluate_intraday_ohlcv(
             actual=f"HL={'Ya' if higher_low_intact else 'Tidak'} · GreenVol {green_vol_share_pct:.0f}%",
             threshold="Close di atas support 30m & tidak lower-low dengan volume merah",
             detail=(
-                "Support intraday terjaga dengan struktur Higher-Low / penyerapan sehat."
-                if not structure_broken
-                else "DITOLAK: Struktur support 5m jebol (Lower-Low / distribusi volume merah) — rawan dump lanjutan."
+                "Pullback Higher-Low Reclaim sehat (seller terserap di atas support utama)."
+                if is_healthy_pullback_reclaim and not structure_broken
+                else (
+                    "Support intraday terjaga dengan struktur Higher-Low / penyerapan sehat."
+                    if not structure_broken
+                    else "DITOLAK: Struktur support 5m jebol (Lower-Low / distribusi volume merah) — rawan dump lanjutan."
+                )
             ),
         )
     )
@@ -228,9 +251,9 @@ def _evaluate_intraday_ohlcv(
     elif structure_broken:
         regime = "BREAKDOWN_DUMP"
         summary = f"Support 5m jebol (GreenVol {green_vol_share_pct:.0f}%)."
-    elif drawdown_from_peak_pct >= 6.0 and higher_low_intact:
+    elif is_healthy_pullback_reclaim or (drawdown_from_peak_pct >= 6.0 and higher_low_intact):
         regime = "PULLBACK_RECLAIM"
-        summary = f"Pullback Reclaim sehat (HL terjaga, DD -{drawdown_from_peak_pct:.1f}%, GreenVol {green_vol_share_pct:.0f}%)."
+        summary = f"Pullback Reclaim sehat (HL terjaga, DD -{drawdown_from_peak_pct:.1f}%, Wick {max_recent_wick_pct:.0f}%)."
     else:
         regime = "CONTINUATION_BREAKOUT"
         summary = f"Continuation Breakout sehat (Wick {max_recent_wick_pct:.0f}%, GreenVol {green_vol_share_pct:.0f}%)."

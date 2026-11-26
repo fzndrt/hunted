@@ -39,7 +39,9 @@ async def fetch_rugcheck_report(
 
 
 def evaluate_security(
-    pair: PairSnapshot, rugcheck_report: Optional[dict[str, Any]]
+    pair: PairSnapshot,
+    rugcheck_report: Optional[dict[str, Any]],
+    now_ms: Optional[int] = None,
 ) -> SecurityResult:
     checks: list[GateCheck] = []
 
@@ -175,6 +177,7 @@ def evaluate_security(
     best_lp_lock_pct = 0.0
     best_lp_lock_usd = 0.0
     is_meteora_nft_lp = False
+    rc_active_markets = 0
 
     for m in markets:
         for key in ("pubkey", "liquidityA", "liquidityB", "mintLP"):
@@ -188,10 +191,15 @@ def evaluate_security(
             is_meteora_nft_lp = True
         lock_pct = float(lp.get("lpLockedPct") or 0.0)
         lock_usd = float(lp.get("lpLockedUSD") or 0.0)
+        pool_usd = float(lp.get("baseUSD") or 0.0) + float(lp.get("quoteUSD") or 0.0)
+        if max(pool_usd, lock_usd) >= 2_000.0:
+            rc_active_markets += 1
         if lock_pct > best_lp_lock_pct:
             best_lp_lock_pct = lock_pct
         if lock_usd > best_lp_lock_usd:
             best_lp_lock_usd = lock_usd
+
+    active_markets_count = max(1, int(pair.pool_count or 1), rc_active_markets)
 
     # 6. Creator / Dev Supply Cap (<= 2.5%) & Holder Non-Protokol
     creator = str(rugcheck_report.get("creator") or "").strip()
@@ -268,31 +276,55 @@ def evaluate_security(
     total_holders_raw = rugcheck_report.get("totalHolders")
     total_holders = int(total_holders_raw) if isinstance(total_holders_raw, (int, float)) and total_holders_raw > 0 else 0
 
-    # 8. Minimum Organic Holder Depth (Anti-Koin Sepi yang Langsung Mati)
-    min_holders_req = 180 if pair.market_cap >= 100_000.0 else 95
+    import time as _time
+    resolved_now_ms = now_ms if now_ms is not None else int(_time.time() * 1000)
+    if pair.pair_created_at_ms > 0:
+        age_min = max(1.0, (resolved_now_ms - pair.pair_created_at_ms) / 60_000.0)
+    else:
+        age_min = 60.0
+    holders_per_min = round(total_holders / age_min, 2) if total_holders > 0 else 0.0
+
+    # 8. Minimum Organic Holder Depth (Dinaikkan di v4 agar koin sepi/cabal langsung terblokir!)
+    if pair.market_cap >= 390_000.0:
+        min_holders_req = 1_500
+    elif pair.market_cap >= 100_000.0:
+        min_holders_req = 280
+    else:
+        min_holders_req = 220
+
     holders_ok = (total_holders == 0) or (total_holders >= min_holders_req)
     checks.append(
         GateCheck(
             id="organic_holders",
             layer="SECURITY",
-            label="Basis Holder Organik (Anti-Koin Mati)",
+            label="Basis Holder Organik & Kecepatan Adopsi",
             passed=holders_ok,
             severity="PASS" if holders_ok else "VETO",
-            actual=f"{total_holders:,} holders" if total_holders > 0 else "N/A",
-            threshold=f">= {min_holders_req} holders",
+            actual=(
+                f"{total_holders:,} holders ({holders_per_min:.1f}/m)"
+                if total_holders > 0
+                else "N/A"
+            ),
+            threshold=f">= {min_holders_req:,} holders",
             detail=(
-                f"Basis komunitas holder solid ({total_holders:,} dompet)."
+                f"Basis komunitas holder solid ({total_holders:,} dompet, {holders_per_min:.1f} holder/menit)."
                 if holders_ok
-                else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req}) — rawan sepi & mati."
+                else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req:,}) — rawan sepi & langsung mati."
             ),
         )
     )
 
-    # 9. Pareto Conservation Law (Anti-Whale Concentration & Anti-Nano-Swarm/Cabal)
+    # 9. Smart Viral Pareto Law (Anti-Whale Concentration & Anti-Nano-Swarm/Cabal)
     non_protocol_holders.sort(reverse=True)
     top1_pct = non_protocol_holders[0] if non_protocol_holders else 0.0
     top10_pct = sum(non_protocol_holders[:10]) if non_protocol_holders else 0.0
     top5 = non_protocol_holders[:5]
+
+    warn_or_danger_risks = sum(
+        1
+        for r in risks
+        if str(r.get("level", "")).lower() in {"danger", "error", "critical", "warn"}
+    )
 
     # Deteksi Nano-Swarm buatan: 5 wallet teratas hampir seragam persis (spread < 0.35%) dengan total > 9%
     is_nano_swarm = (
@@ -300,12 +332,27 @@ def evaluate_security(
         and (top5[0] - top5[4]) < 0.35
         and sum(top5) >= 9.0
     )
-    # Batas Top1 pintar: 6.5% default; hingga 8.0% khusus komunitas besar >= 2.000 holder bersih tanpa insider
-    max_top1_allowed = (
-        8.0
-        if (total_holders >= 2_000 and insider_count == 0 and (rc_score is not None and rc_score <= 15))
-        else 6.5
+
+    # Smart Viral Pareto (v4):
+    # - Ultra-Clean Viral Runner (seperti $Zero: RC score<=5, 0 risk, 0 insider, Dev 0%, Top10<=28%, >=1.000 holder): Top1 <= 11.0%
+    # - Proven Community (>=2.000 holder, 0 insider, RC score<=15): Top1 <= 8.0%
+    # - Default token kecil/baru: ketat <= 6.5%
+    clean_viral_pareto = (
+        rc_score is not None
+        and rc_score <= 5
+        and warn_or_danger_risks == 0
+        and insider_count == 0
+        and dev_pct <= 0.05
+        and top10_pct <= 28.0
+        and total_holders >= 1_000
     )
+    if clean_viral_pareto:
+        max_top1_allowed = 11.0
+    elif total_holders >= 2_000 and insider_count == 0 and (rc_score is not None and rc_score <= 15):
+        max_top1_allowed = 8.0
+    else:
+        max_top1_allowed = 6.5
+
     pareto_ok = (
         (top1_pct <= max_top1_allowed)
         and (top10_pct <= 30.0)
@@ -323,7 +370,12 @@ def evaluate_security(
     elif top1_pct > max_top1_allowed or top10_pct > 30.0:
         pareto_status = "WHALE_CONCENTRATED"
         pareto_detail = (
-            f"DITOLAK: Konsentrasi holder terlalu tinggi (Top1={top1_pct:.2f}%, Top10={top10_pct:.2f}%)."
+            f"DITOLAK: Konsentrasi holder terlalu tinggi (Top1={top1_pct:.2f}% > {max_top1_allowed:.1f}%, Top10={top10_pct:.2f}%)."
+        )
+    elif clean_viral_pareto and top1_pct > 6.5:
+        pareto_status = "VIRAL_PARETO_CLEAN"
+        pareto_detail = (
+            f"Lolos Smart Viral Pareto (Score={rc_score}, 0 risk, 0% dev, {total_holders:,}H, Top1={top1_pct:.2f}%, Top10={top10_pct:.2f}%)."
         )
     else:
         pareto_status = "HEALTHY_PARETO"
@@ -333,7 +385,7 @@ def evaluate_security(
         GateCheck(
             id="pareto_distribution",
             layer="SECURITY",
-            label="Hukum Pareto & Anti-Nano-Swarm",
+            label="Smart Viral Pareto & Anti-Nano-Swarm",
             passed=pareto_ok,
             severity="PASS" if pareto_ok else "VETO",
             actual=f"Top1 {top1_pct:.2f}% · Top10 {top10_pct:.2f}%",
@@ -356,4 +408,7 @@ def evaluate_security(
         is_meteora_nft_lp=is_meteora_nft_lp,
         pareto_status=pareto_status,
         total_holders=total_holders,
+        holders_per_min=holders_per_min,
+        active_markets_count=active_markets_count,
+        clean_viral_pareto=clean_viral_pareto,
     )

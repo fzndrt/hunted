@@ -53,6 +53,8 @@ def parse_dexscreener_pair(
     h24_tx = txns.get("h24") or {}
 
     mc = _safe_float(raw.get("marketCap")) or _safe_float(raw.get("fdv"))
+    boosts = raw.get("boosts") or {}
+    active_boosts = _safe_int(boosts.get("active")) if isinstance(boosts, dict) else 0
     return PairSnapshot(
         mint=mint,
         pair_address=str(raw.get("pairAddress") or ""),
@@ -83,12 +85,16 @@ def parse_dexscreener_pair(
         price_change_h6=_safe_float(pc.get("h6")),
         buys_h6=_safe_int(h6_tx.get("buys")),
         sells_h6=_safe_int(h6_tx.get("sells")),
+        pool_count=1,
+        is_boosted=active_boosts > 0,
     )
 
 
 def pick_best_solana_pair(
     pairs: list[dict[str, Any]], mint: str, feed_sources: tuple[str, ...] = ()
 ) -> Optional[PairSnapshot]:
+    from dataclasses import replace
+
     candidates: list[PairSnapshot] = []
     for raw in pairs:
         snap = parse_dexscreener_pair(raw, feed_sources=feed_sources)
@@ -96,6 +102,16 @@ def pick_best_solana_pair(
             candidates.append(snap)
     if not candidates:
         return None
+    # Hitung jumlah pool DEX aktif >= $2K likuiditas (sinyal Smart LP / multi-pool seperti $Zero)
+    active_pool_count = max(
+        1,
+        sum(
+            1
+            for c in candidates
+            if c.liquidity_usd >= 2_000.0 and c.quote_mint in VERIFIED_HARD_QUOTE_MINTS
+        ),
+    )
+    any_boosted = any(c.is_boosted for c in candidates)
     # Prioritaskan pair dengan hard-quote terverifikasi lalu likuiditas terbesar
     candidates.sort(
         key=lambda p: (
@@ -104,7 +120,7 @@ def pick_best_solana_pair(
         ),
         reverse=True,
     )
-    return candidates[0]
+    return replace(candidates[0], pool_count=active_pool_count, is_boosted=any_boosted)
 
 
 async def _get_json(client: httpx.AsyncClient, url: str) -> Any:

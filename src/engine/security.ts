@@ -40,6 +40,7 @@ export interface RugCheckReportLike {
   };
   token_extensions?: Record<string, unknown> | Array<Record<string, unknown> | string> | null;
   transferFee?: { pct?: number; maxAmount?: number } | null;
+  risks?: Array<{ name?: string; level?: string }>;
   topHolders?: Array<{
     address?: string;
     owner?: string;
@@ -387,12 +388,29 @@ export function evaluateSecurityLayer(
   const totalHolders = asNum(rug.totalHolders, 0);
 
   const rugScoreVal = typeof rug.score_normalised === 'number' ? rug.score_normalised : rug.score ?? null;
-  const maxSingleAllowed =
-    totalHolders >= 2000 && insiderHoldersCount === 0 && (rugScoreVal === null || rugScoreVal <= 15)
-      ? 8.0
-      : 6.5;
+  const warnOrDangerRisks = Array.isArray(rug.risks)
+    ? rug.risks.filter((r) => ['danger', 'error', 'critical', 'warn'].includes(String(r?.level ?? '').toLowerCase())).length
+    : 0;
+  const createdAtMs = asNum(pair.pairCreatedAt, 0);
+  const ageMin = createdAtMs > 0 ? Math.max(1, (Date.now() - createdAtMs) / 60_000) : 60;
+  const holdersPerMin = totalHolders > 0 ? Number((totalHolders / ageMin).toFixed(2)) : 0;
+
+  const cleanViralPareto =
+    rugScoreVal !== null &&
+    rugScoreVal <= 5 &&
+    warnOrDangerRisks === 0 &&
+    insiderHoldersCount === 0 &&
+    creatorBalancePct <= 0.05 &&
+    top10PurePct <= 28.0 &&
+    totalHolders >= 1000;
+
+  const maxSingleAllowed = cleanViralPareto
+    ? 11.0
+    : totalHolders >= 2000 && insiderHoldersCount === 0 && (rugScoreVal === null || rugScoreVal <= 15)
+    ? 8.0
+    : 6.5;
   const top10Ceiling =
-    outsidePoolPct >= 80 && totalHolders >= 1000 && insiderHoldersCount === 0 && maxSinglePurePct <= 6.5
+    outsidePoolPct >= 80 && totalHolders >= 1000 && insiderHoldersCount === 0 && maxSinglePurePct <= maxSingleAllowed
       ? Math.min(30.0, outsidePoolPct * 0.32)
       : 28.0;
 
@@ -420,12 +438,10 @@ export function evaluateSecurityLayer(
   checks.push({
     id: 'pareto_holders',
     layer: 'SECURITY',
-    label: 'Holder Distribution & Anti-Nano-Swarm',
+    label: 'Smart Viral Pareto & Anti-Nano-Swarm',
     passed: paretoOk,
     severity: 'HARD_VETO',
-    actual: `Top10: ${top10PurePct.toFixed(1)}% · Max: ${maxSinglePurePct.toFixed(2)}% · #5: ${rank5PurePct.toFixed(
-      2
-    )}% · Holders: ${totalHolders.toLocaleString()}`,
+    actual: `Top10: ${top10PurePct.toFixed(1)}% · Max: ${maxSinglePurePct.toFixed(2)}% · Holders: ${totalHolders.toLocaleString()} (${holdersPerMin.toFixed(1)}/m)`,
     threshold: `Top10 <= ${top10Ceiling.toFixed(1)}% · Max <= ${maxSingleAllowed.toFixed(1)}% · Anti-Swarm · >= ${minHoldersRequired} holders`,
     detail: isNanoSwarm
       ? 'Pola Nano-Swarm terdeteksi: suplai luar pool besar tapi dipecah ke ratusan dompet bot mikro.'
@@ -435,6 +451,8 @@ export function evaluateSecurityLayer(
       ? `Kluster ${maxTwinCluster} dompet kembar identik terdeteksi (indikasi split-wallet bundler).`
       : !holdersEnough
       ? `Jumlah holder terlalu sedikit (${totalHolders} < ${minHoldersRequired}).`
+      : cleanViralPareto && maxSinglePurePct > 6.5
+      ? `Lolos Smart Viral Pareto (Score ${rugScoreVal}, 0 risk, 0% dev, ${totalHolders.toLocaleString()}H).`
       : 'Kurva distribusi holder sehat mengikuti hukum Pareto organik.',
   });
 
@@ -466,7 +484,9 @@ export function evaluateSecurityLayer(
       hardQuoteSymbol: hardQuoteSymbol || String(pair.quoteToken?.symbol ?? 'UNKNOWN'),
       hardQuoteReserveRatioPct:
         hardQuoteReserveRatioPct !== null ? Number(hardQuoteReserveRatioPct.toFixed(1)) : null,
-      rugScore: typeof rug.score_normalised === 'number' ? rug.score_normalised : rug.score ?? null,
+      rugScore: rugScoreVal,
+      holdersPerMin,
+      cleanViralPareto,
     },
   };
 }

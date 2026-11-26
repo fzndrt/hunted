@@ -42,8 +42,8 @@ export function computeScoreAndVerdict(
       ? 7
       : antiTop.corridor?.id === 'B_POST_100K'
       ? 5
-      : antiTop.corridor?.id === 'C_MID_EXPANSION'
-      ? 3
+      : antiTop.corridor?.id === 'C_MID_EXPANSION' || antiTop.corridor?.id === 'D_VIRAL_BASE'
+      ? 4
       : 0;
   const p1 = Math.round(clamp(headroomPts + earlyMcBonus, 0, 25));
 
@@ -52,7 +52,11 @@ export function computeScoreAndVerdict(
   const whaleAbsorption = m.pM5 >= 2.0 && m.buySellRatioM5 >= 0.72 && m.buySellRatioM5 < 1.05;
   const bsPts = whaleAbsorption ? Math.max(rawBsPts, 7.5) : rawBsPts;
   const ticketPts = clamp((m.avgTicketM5Usd / 95) * 8, 0, 8);
-  const accelPts = clamp(((m.volAccelRatio - 0.8) / 2.2) * 6, 0, 6);
+  const accelPts = m.isViralVelocity
+    ? 6
+    : m.isPullbackContractionOk
+    ? Math.max(4, clamp(((m.volAccelRatio - 0.8) / 2.2) * 6, 0, 6))
+    : clamp(((m.volAccelRatio - 0.8) / 2.2) * 6, 0, 6);
   const p2 = Math.round(clamp(bsPts + ticketPts + accelPts, 0, 25));
 
   // Pillar 3: Holder & Supply Health (0–20)

@@ -148,15 +148,31 @@ async def run_scan_cycle(
 
     def _candidate_rank(p: PairSnapshot) -> tuple[int, int, int, float, float]:
         organic_hits = sum(1 for src in p.feed_sources if src in ORGANIC_FEED_SOURCES)
-        in_corridor = 1 if (22_000.0 <= p.market_cap <= 450_000.0 and p.liquidity_usd >= 10_000.0) else 0
+        in_core_corridor = 22_000.0 <= p.market_cap <= 395_000.0 and p.liquidity_usd >= 10_000.0
+        in_viral_base_d = (
+            395_000.0 < p.market_cap <= 880_000.0
+            and p.vol_h1 >= 220_000.0
+            and p.liquidity_usd >= 38_000.0
+        )
+        in_corridor = 1 if (in_core_corridor or in_viral_base_d) else 0
         survived_sniper = 1 if _age_min(p) >= cfg.min_pair_age_minutes else 0
-        has_live_vol = 1 if p.vol_m5 >= 1_200.0 else 0
-        return (in_corridor, survived_sniper, has_live_vol, organic_hits * 25_000.0 + p.vol_m5, p.vol_h1)
+        has_live_vol = 1 if (p.vol_m5 >= 6_000.0 or (_age_min(p) >= 720.0 and p.vol_m5 >= 1_800.0)) else 0
+        multi_pool_bonus = 20_000.0 if p.pool_count >= 2 else 0.0
+        return (
+            in_corridor,
+            survived_sniper,
+            has_live_vol,
+            organic_hits * 25_000.0 + multi_pool_bonus + p.vol_m5,
+            p.vol_h1,
+        )
 
     eligible = [
         p
         for p in candidates
-        if 20_000.0 <= p.market_cap <= 550_000.0 and p.liquidity_usd >= 10_000.0
+        if (
+            (20_000.0 <= p.market_cap <= 450_000.0 and p.liquidity_usd >= 10_000.0)
+            or (450_000.0 < p.market_cap <= 900_000.0 and p.vol_h1 >= 220_000.0 and p.liquidity_usd >= 38_000.0)
+        )
     ]
 
     # Bagi slot Stage-2 antara koin Intraday (20m–20j) dan koin Konsolidasi Harian (>= 20j)

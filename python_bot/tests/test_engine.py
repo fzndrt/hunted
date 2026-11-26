@@ -37,9 +37,9 @@ def _make_pair(**overrides) -> PairSnapshot:
         price_usd=0.00005,
         market_cap=50_000.0,
         liquidity_usd=18_000.0,
-        vol_m5=8_500.0,
-        vol_h1=22_000.0,
-        vol_h24=25_000.0,
+        vol_m5=12_000.0,
+        vol_h1=70_000.0,
+        vol_h24=95_000.0,
         buys_m5=25,
         sells_m5=15,
         buys_h1=45,
@@ -112,8 +112,8 @@ def test_fresh_graduation_age_proportional_tx_threshold() -> None:
         sells_h1=8,
         buys_h24=14,
         sells_h24=8,
-        vol_m5=3_500.0,
-        vol_h1=16_000.0,
+        vol_m5=9_500.0,
+        vol_h1=60_000.0,
         pair_created_at_ms=now_ms - 4 * 60_000,
     )
     # Secara default koin 4 menit ditahan survival_age >= 20m; jika min_pair_age_minutes=0, cek tx proporsional tetap 18
@@ -469,11 +469,11 @@ def test_fresh_overextended_coin_and_dying_volume_are_blocked() -> None:
     now_ms = 1_750_000_000_000
     cfg = BotConfig()
 
-    # 1. Koin muda 35m sudah +165% 1h -> melampaui batas fresh +115% -> WAIT_DIP (jangan kejar pucuk!)
+    # 1. Koin muda 35m non-viral (Vol5m $8.5K, Vol1h $60K) sudah +165% 1h -> melampaui batas fresh +115% -> WAIT_DIP!
     overextended_fresh = _make_pair(
         market_cap=88_000.0,
         liquidity_usd=22_000.0,
-        vol_m5=8_000.0,
+        vol_m5=8_500.0,
         vol_h1=60_000.0,
         price_change_m5=6.0,
         price_change_h1=165.0,
@@ -483,12 +483,12 @@ def test_fresh_overextended_coin_and_dying_volume_are_blocked() -> None:
     assert not res_peak.passed
     assert any(c.id == "parabolic_cap" and not c.passed for c in res_peak.checks)
 
-    # 2. Koin usia 50m yg Vol1h $120K ($10K/5m) tapi Vol5m anjlok ke $2,500 (accel 0.25x) -> HARD VETO!
+    # 2. Koin usia 50m yg Vol1h $180K ($15K/5m) tapi Vol5m anjlok ke $8,100 (accel 0.54x & < $12K) -> HARD VETO!
     dying_vol = _make_pair(
         market_cap=68_000.0,
         liquidity_usd=20_000.0,
-        vol_m5=2_500.0,
-        vol_h1=120_000.0,
+        vol_m5=8_100.0,
+        vol_h1=180_000.0,
         price_change_m5=2.0,
         price_change_h1=45.0,
         pair_created_at_ms=now_ms - 50 * 60_000,
@@ -633,3 +633,229 @@ def test_daily_consolidation_distinguishes_bullish_accumulation_vs_bearish_distr
     assert not st_bear.wait_dip_only  # Wajib HARD VETO (bukan WAIT_DIP!)
     assert st_bear.regime == "BEARISH_DISTRIBUTION"
     assert not at_bear.passed  # Juga kena veto 6h sell bleed di Layer 2A!
+
+
+def test_zero_replay_passes_all_three_golden_entries_with_smart_viral_pareto() -> None:
+    """Replay forensik $Zero (DTSkmo3s...pump) pada 3 titik Golden Entry sebelum terbang ke $1.30M!"""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+    from bot.telegram_notifier import format_entry_alert
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.003"},
+        {"outAmount": "98800000", "priceImpactPct": "0.004"},
+        {"outAmount": "10000000", "priceImpactPct": "0.015"},
+        {"outAmount": "955000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+
+    def _zero_rc(holders: int) -> dict:
+        return {
+            "rugged": False,
+            "score_normalised": 1,
+            "totalHolders": holders,
+            "creator": "DevZero1111111111111111111111111111111111111",
+            "token": {"mintAuthority": None, "freezeAuthority": None},
+            "token_extensions": {},
+            "risks": [],
+            "markets": [
+                {
+                    "marketType": "pump_fun_amm",
+                    "pubkey": "PumpAmmZero11111111111111111111111111111111",
+                    "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 76_748, "baseUSD": 38_000, "quoteUSD": 38_000},
+                },
+                {
+                    "marketType": "meteoraDlmm",
+                    "pubkey": "MetZeroA11111111111111111111111111111111111",
+                    "lp": {"lpLockedPct": 0.0, "lpLockedUSD": 0, "baseUSD": 14_000, "quoteUSD": 14_000},
+                },
+            ],
+            "knownAccounts": {
+                "PumpAmmZero11111111111111111111111111111111": {"name": "Pump Fun AMM", "type": "AMM"},
+            },
+            "topHolders": [
+                {"owner": "Czrp1c6Whale1111111111111111111111111111111", "pct": 10.30, "insider": False},
+                {"owner": "PumpAmmZero11111111111111111111111111111111", "pct": 4.71, "insider": False},
+                {"owner": "HolderZ311111111111111111111111111111111111", "pct": 3.35, "insider": False},
+                {"owner": "HolderZ411111111111111111111111111111111111", "pct": 1.78, "insider": False},
+                {"owner": "HolderZ511111111111111111111111111111111111", "pct": 1.40, "insider": False},
+                {"owner": "HolderZ611111111111111111111111111111111111", "pct": 1.25, "insider": False},
+            ],
+        }
+
+    # --- GOLDEN ENTRY #1: $244K (age 20m, 1h +740%, pause sehat 5m +0.3%, Vol5m $110K) ---
+    zero_e1 = _make_pair(
+        mint="DTSkmo3sCCKLCh91dJLiWCpwcKtK3yDBZMqZGSV1pump",
+        symbol="Zero",
+        name="ZeroSumEnjoyer",
+        market_cap=244_000.0,
+        liquidity_usd=42_000.0,
+        vol_m5=110_000.0,
+        vol_h1=480_000.0,
+        vol_h24=480_000.0,
+        buys_m5=320,
+        sells_m5=290,
+        buys_h1=1_800,
+        sells_h1=1_400,
+        buys_h24=1_800,
+        sells_h24=1_400,
+        price_change_m5=0.3,
+        price_change_h1=740.0,
+        price_change_h24=740.0,
+        pair_created_at_ms=now_ms - 20 * 60_000,
+        feed_sources=("gecko_trending_5m", "gecko_trending_1h", "dex_pumpswap"),
+        pool_count=3,
+        is_boosted=False,
+    )
+    candles_e1 = [
+        [1, 0.000029, 0.000055, 0.000029, 0.000049, 62_000],
+        [2, 0.000049, 0.000072, 0.000046, 0.000057, 106_000],
+        [3, 0.000057, 0.000175, 0.000056, 0.000168, 131_000],
+        [4, 0.000168, 0.000255, 0.000165, 0.000243, 173_000],
+        [5, 0.000243, 0.000265, 0.000215, 0.000244, 110_000],  # Pause sehat, upWick ~23%
+    ]
+    sec1 = evaluate_security(zero_e1, _zero_rc(1_450), now_ms=now_ms)
+    at1 = evaluate_anti_top(zero_e1, cfg, now_ms=now_ms)
+    st1 = evaluate_candle_structure(zero_e1, at1, candles_e1, [], cfg)
+    audit1 = score_and_finalize(zero_e1, sec1, at1, exec_ok, cfg, structure=st1)
+    assert sec1.passed and sec1.clean_viral_pareto and sec1.pareto_status == "VIRAL_PARETO_CLEAN"
+    assert at1.passed and at1.is_viral_velocity
+    assert st1.passed
+    assert audit1.verdict == "ENTRY_READY"
+    assert audit1.total_score >= 82
+
+    # --- GOLDEN ENTRY #2: $267K (age 45m, pullback -40% dr $443K, Vol5m $50K, accel 0.43x, reclaim hijau!) ---
+    zero_e2 = _make_pair(
+        mint="DTSkmo3sCCKLCh91dJLiWCpwcKtK3yDBZMqZGSV1pump",
+        symbol="Zero",
+        name="ZeroSumEnjoyer",
+        market_cap=267_000.0,
+        liquidity_usd=45_000.0,
+        vol_m5=50_000.0,
+        vol_h1=1_400_000.0,  # avg 5m = $116.7K -> accel 0.43x (kontraksi pullback sehat!)
+        vol_h24=1_400_000.0,
+        buys_m5=210,
+        sells_m5=180,
+        buys_h1=4_200,
+        sells_h1=3_600,
+        buys_h24=4_200,
+        sells_h24=3_600,
+        price_change_m5=6.8,
+        price_change_h1=820.0,
+        price_change_h24=820.0,
+        pair_created_at_ms=now_ms - 45 * 60_000,
+        feed_sources=("gecko_trending_5m", "gecko_trending_1h", "gecko_trending_6h", "dex_pumpswap"),
+        pool_count=4,
+        is_boosted=False,
+    )
+    candles_e2 = [
+        [1, 0.000168, 0.000255, 0.000165, 0.000244, 173_000],
+        [2, 0.000244, 0.000380, 0.000235, 0.000360, 195_000],
+        [3, 0.000360, 0.000443, 0.000340, 0.000410, 220_000],  # Peak $443K
+        [4, 0.000410, 0.000415, 0.000310, 0.000320, 115_000],  # Pullback leg 1
+        [5, 0.000320, 0.000325, 0.000248, 0.000250, 62_000],   # Higher Low di $248K (> $165K)
+        [6, 0.000250, 0.000270, 0.000249, 0.000267, 50_000],   # Reclaim hijau (upWick ~14%)!
+    ]
+    sec2 = evaluate_security(zero_e2, _zero_rc(2_800), now_ms=now_ms)
+    at2 = evaluate_anti_top(zero_e2, cfg, now_ms=now_ms)
+    st2 = evaluate_candle_structure(zero_e2, at2, candles_e2, [], cfg)
+    audit2 = score_and_finalize(zero_e2, sec2, at2, exec_ok, cfg, structure=st2)
+    assert at2.passed and at2.is_pullback_contraction_ok and at2.vol_m5_accel_ratio < 0.55
+    assert st2.passed and st2.regime == "PULLBACK_RECLAIM"
+    assert audit2.verdict == "ENTRY_READY"
+    alert_text = format_entry_alert(audit2)
+    assert "5 Bukti Bahan Bakar Kenaikan" in alert_text
+    assert "4 pool aktif" in alert_text
+
+    # --- GOLDEN ENTRY #3: $580K Corridor D Viral Base (age 95m, Vol1h $520K, Liq $62K, Holders 4,800) ---
+    zero_e3 = _make_pair(
+        mint="DTSkmo3sCCKLCh91dJLiWCpwcKtK3yDBZMqZGSV1pump",
+        symbol="Zero",
+        name="ZeroSumEnjoyer",
+        market_cap=580_000.0,
+        liquidity_usd=62_000.0,
+        vol_m5=42_000.0,
+        vol_h1=520_000.0,
+        vol_h24=2_400_000.0,
+        buys_m5=185,
+        sells_m5=145,
+        buys_h1=2_100,
+        sells_h1=1_800,
+        buys_h24=7_200,
+        sells_h24=6_100,
+        price_change_m5=3.5,
+        price_change_h1=140.0,
+        price_change_h24=1_900.0,
+        pair_created_at_ms=now_ms - 95 * 60_000,
+        feed_sources=("gecko_trending_5m", "gecko_trending_1h", "gecko_trending_6h", "dex_pumpswap"),
+        pool_count=4,
+        is_boosted=False,
+    )
+    candles_e3 = [
+        [1, 0.000540, 0.000575, 0.000530, 0.000560, 48_000],
+        [2, 0.000560, 0.000585, 0.000548, 0.000558, 39_000],
+        [3, 0.000558, 0.000580, 0.000552, 0.000565, 36_000],
+        [4, 0.000565, 0.000590, 0.000560, 0.000580, 42_000],
+    ]
+    sec3 = evaluate_security(zero_e3, _zero_rc(4_800), now_ms=now_ms)
+    at3 = evaluate_anti_top(zero_e3, cfg, now_ms=now_ms)
+    st3 = evaluate_candle_structure(zero_e3, at3, candles_e3, [], cfg)
+    audit3 = score_and_finalize(zero_e3, sec3, at3, exec_ok, cfg, structure=st3)
+    assert sec3.passed
+    assert at3.passed and at3.corridor_id == "CORRIDOR_D_VIRAL_BASE" and at3.is_corridor_d_viral_base
+    assert st3.passed
+    assert audit3.verdict == "ENTRY_READY"
+
+
+def test_weak_mediocre_launch_and_unqualified_corridor_d_are_hard_vetoed() -> None:
+    """v4: Koin lemah ($3.2K/5m, 120H), koin $540K non-viral, & Top1=10.3% berisiko wajib HARD VETO!"""
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+
+    # 1. Koin lemah/sepi yg dulu lolos v3 -> wajib HARD VETO di Layer 1 & Layer 2A v4!
+    weak_pair = _make_pair(
+        market_cap=65_000.0,
+        liquidity_usd=18_000.0,
+        vol_m5=3_200.0,
+        vol_h1=22_000.0,
+        vol_h24=26_000.0,
+        price_change_m5=5.0,
+        price_change_h1=45.0,
+        pair_created_at_ms=now_ms - 35 * 60_000,
+    )
+    weak_rc = _clean_rugcheck()
+    weak_rc["totalHolders"] = 120
+    sec_w = evaluate_security(weak_pair, weak_rc, now_ms=now_ms)
+    at_w = evaluate_anti_top(weak_pair, cfg, now_ms=now_ms)
+    assert not sec_w.passed  # Holders 120 < 220!
+    assert not at_w.passed and not at_w.wait_dip_only  # Vol5m $3.2K < $8K & Vol1h $22K < $55K -> HARD VETO!
+
+    # 2. Koin $540K biasa tanpa volume viral base -> wajib HARD VETO (tidak boleh masuk Corridor D)
+    fake_d = _make_pair(
+        market_cap=540_000.0,
+        liquidity_usd=28_000.0,
+        vol_m5=9_000.0,
+        vol_h1=95_000.0,
+        vol_h24=240_000.0,
+        price_change_m5=4.0,
+        price_change_h1=30.0,
+        pair_created_at_ms=now_ms - 180 * 60_000,
+    )
+    at_d = evaluate_anti_top(fake_d, cfg, now_ms=now_ms)
+    assert not at_d.passed and not at_d.wait_dip_only and not at_d.is_corridor_d_viral_base
+
+    # 3. Top1 = 10.3% pada koin berisiko (RC score=20 / holders=350) -> TIDAK boleh dapat Smart Viral Pareto!
+    risky_rc = _clean_rugcheck()
+    risky_rc["score_normalised"] = 20
+    risky_rc["totalHolders"] = 350
+    risky_rc["topHolders"] = [
+        {"owner": "WhaleBad11111111111111111111111111111111111", "pct": 10.30},
+        {"owner": "HolderB11111111111111111111111111111111111", "pct": 3.00},
+        {"owner": "HolderC11111111111111111111111111111111111", "pct": 2.10},
+    ]
+    sec_r = evaluate_security(_make_pair(), risky_rc, now_ms=now_ms)
+    assert not sec_r.passed
+    assert not sec_r.clean_viral_pareto
+    assert sec_r.pareto_status == "WHALE_CONCENTRATED"

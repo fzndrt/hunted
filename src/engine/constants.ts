@@ -54,8 +54,8 @@ export const DEFAULT_SCAN_CONFIG: ScanConfig = {
 };
 
 /**
- * PumpSwap-native Early-Entry Corridors (eliminates post-graduation dead zone $78K–$112K)
- * while still blocking late-stage tops (> $390K) and demanding real organic velocity.
+ * v4 PumpSwap-native Early-Entry & Viral Base Corridors ($25K–$850K)
+ * with raised organic holder depth to block weak dying launches.
  */
 export const ENTRY_CORRIDORS: CorridorDefinition[] = [
   {
@@ -68,7 +68,7 @@ export const ENTRY_CORRIDORS: CorridorDefinition[] = [
     minLiqMcRatioPct: 12.0,
     minTx24h: 60,
     minAvgTicketM5Usd: 22.0,
-    minHolders: 95,
+    minHolders: 220,
     defaultStopLossPct: 16,
     tp1GainPct: 35,
     tp2GainPct: 85,
@@ -83,7 +83,7 @@ export const ENTRY_CORRIDORS: CorridorDefinition[] = [
     minLiqMcRatioPct: 10.0,
     minTx24h: 180,
     minAvgTicketM5Usd: 22.0,
-    minHolders: 180,
+    minHolders: 280,
     defaultStopLossPct: 15,
     tp1GainPct: 35,
     tp2GainPct: 80,
@@ -98,10 +98,25 @@ export const ENTRY_CORRIDORS: CorridorDefinition[] = [
     minLiqMcRatioPct: 8.0,
     minTx24h: 350,
     minAvgTicketM5Usd: 24.0,
-    minHolders: 260,
+    minHolders: 280,
     defaultStopLossPct: 14,
     tp1GainPct: 30,
     tp2GainPct: 65,
+  },
+  {
+    id: 'D_VIRAL_BASE',
+    label: 'Corridor D · Viral Base Breakout ($390K–$850K)',
+    minMc: 390_000,
+    maxMc: 850_000,
+    nextWallMc: 1_300_000,
+    minLiqUsd: 40_000,
+    minLiqMcRatioPct: 7.0,
+    minTx24h: 800,
+    minAvgTicketM5Usd: 28.0,
+    minHolders: 1_500,
+    defaultStopLossPct: 14,
+    tp1GainPct: 35,
+    tp2GainPct: 85,
   },
 ];
 
