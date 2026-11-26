@@ -71,17 +71,17 @@ def _evaluate_intraday_ohlcv(
     checks: list[GateCheck] = []
 
     if len(candles_5m) < 4:
-        # Fallback ketat berbasis snapshot ketika OHLCV tidak tersedia (v4.1: dukung Hyper-Viral Fast-Track 12–19m!)
+        # v5 Fallback ketat: JANGAN pernah lolosan koin tanpa OHLCV jika 5m tidak hijau kuat (>= +2%) & buyer dominan (>= 54%)
         safe_snapshot = (
-            anti_top.p_m5 >= -1.0
+            anti_top.p_m5 >= 2.0
+            and anti_top.buy_ratio_5m_pct >= 54.0
+            and anti_top.buy_ratio_1h_pct >= 53.0
             and (
                 (anti_top.is_hyper_viral_fasttrack and pair.vol_m5 >= 35_000.0)
                 or (
                     anti_top.age_minutes >= max(cfg.min_pair_age_minutes, 25.0)
-                    and (
-                        (anti_top.is_viral_velocity and pair.vol_m5 >= 15_000.0)
-                        or (anti_top.vol_m5_accel_ratio >= 0.65 and anti_top.p_h1 <= cfg.max_fresh_h1_change_pct)
-                    )
+                    and anti_top.is_viral_velocity
+                    and pair.vol_m5 >= 20_000.0
                 )
             )
         )
@@ -89,15 +89,15 @@ def _evaluate_intraday_ohlcv(
             GateCheck(
                 id="ohlcv_intraday_fallback",
                 layer="STRUCTURE",
-                label="Verifikasi Struktur Candle 5m (Fallback)",
+                label="Verifikasi Struktur Candle 5m (Fallback Ketat v5)",
                 passed=safe_snapshot,
                 severity="PASS" if safe_snapshot else "WAIT_DIP",
-                actual=f"OHLCV N/A · Vol5m ${pair.vol_m5:,.0f} · accel {anti_top.vol_m5_accel_ratio:.2f}x · 1h {anti_top.p_h1:+.0f}%",
-                threshold="OHLCV 5m >= 4 candle (atau Hyper-Viral Fast-Track / viral >=$15K/5m)",
+                actual=f"OHLCV N/A · 5m {anti_top.p_m5:+.1f}% · Buy5m {anti_top.buy_ratio_5m_pct:.0f}% · Vol5m ${pair.vol_m5:,.0f}",
+                threshold="OHLCV 5m >= 4 candle (atau Viral/Fast-Track 5m>=+2% & Buy>=54%)",
                 detail=(
-                    "Data candle 5m belum penuh (pool sangat baru), namun profil momentum hyper-viral/snapshot terverifikasi."
+                    "Data candle 5m belum penuh (pool sangat baru), namun momentum hijau & buyer dominance terverifikasi."
                     if safe_snapshot
-                    else "Data candle 5m belum cukup/kosong pada token berisiko pucuk — tunda entry."
+                    else "Data candle 5m belum cukup/kosong — tunda entry sampai struktur chart OHLCV terbentuk."
                 ),
             )
         )
@@ -108,13 +108,17 @@ def _evaluate_intraday_ohlcv(
             ohlcv_verified=False,
             checks=tuple(checks),
             vol_expansion_ratio=anti_top.vol_m5_accel_ratio,
-            summary="OHLCV 5m tidak tersedia (mode fallback konservatif).",
+            summary="OHLCV 5m tidak tersedia (mode fallback ketat v5).",
         )
 
     closes = [c[4] for c in candles_5m]
     highs = [c[2] for c in candles_5m]
     lows = [c[3] for c in candles_5m]
     vols = [c[5] for c in candles_5m]
+
+    # Kompensasi partial candle terakhir yang baru jalan 1–2 menit
+    effective_last_vol = max(vols[-1], pair.vol_m5) if vols[-1] < pair.vol_m5 * 0.65 else vols[-1]
+    effective_vols = vols[:-1] + [effective_last_vol]
 
     current_close = closes[-1]
     peak_high = max(highs)
@@ -124,9 +128,15 @@ def _evaluate_intraday_ohlcv(
         else 0.0
     )
 
-    # Pre-hitung Higher-Low & GreenVol lebih awal agar blowoff_wick_guard bisa membedakan
-    # Viral Green Absorption (seperti PAIR: 2 candle HIJAU, HL utuh, GreenVol 85%, Vol5m $73K)
-    # vs Blow-Off Top Merah / Distribusi Mati!
+    # Hitung 5m Intraday VWAP (12 candle terakhir = cost basis rata-rata pembeli aktif!)
+    vwap_slice = candles_5m[-12:]
+    vwap_vols = effective_vols[-12:]
+    vwap_num = sum(((c[2] + c[3] + c[4]) / 3.0) * v for c, v in zip(vwap_slice, vwap_vols))
+    vwap_den = sum(vwap_vols)
+    vwap_price = (vwap_num / vwap_den) if vwap_den > 0 else current_close
+    vwap_dev_pct = ((current_close - vwap_price) / vwap_price * 100.0) if vwap_price > 0 else 0.0
+
+    # Pre-hitung Support, Higher-Low & GreenVol 4-bar / 6-bar
     prior_slice = candles_5m[-7:-1] if len(candles_5m) >= 7 else candles_5m[:-1]
     prior_support_low = min(c[3] for c in prior_slice) if prior_slice else 0.0
     support_broken = prior_support_low > 0 and current_close < prior_support_low * 0.99
@@ -137,11 +147,22 @@ def _evaluate_intraday_ohlcv(
     higher_low_intact = first_half_low > 0 and second_half_low >= first_half_low * 0.95
 
     last_6 = candles_5m[-6:]
-    total_v6 = sum(c[5] for c in last_6)
-    green_v6 = sum(c[5] for c in last_6 if c[4] >= c[1])
+    last_6_vols = effective_vols[-6:]
+    total_v6 = sum(last_6_vols)
+    green_v6 = sum(v for c, v in zip(last_6, last_6_vols) if c[4] >= c[1])
     green_vol_share_pct = (green_v6 / total_v6 * 100.0) if total_v6 > 0 else 50.0
 
-    # 1. Deteksi Blow-Off Upper Wick Rejection (v4.1 FIX: bedakan candle HIJAU viral absorption vs blow-off MERAH!)
+    last_4 = candles_5m[-4:]
+    last_4_vols = effective_vols[-4:]
+    total_v4 = sum(last_4_vols)
+    green_v4 = sum(v for c, v in zip(last_4, last_4_vols) if c[4] >= c[1])
+    green_vol_last4_pct = (green_v4 / total_v4 * 100.0) if total_v4 > 0 else 50.0
+
+    _, latest_o, _, latest_l, latest_c, _ = candles_5m[-1]
+    _, prev_o, _, prev_l, prev_c, _ = candles_5m[-2]
+    latest_body_pct = ((latest_c - latest_o) / latest_o * 100.0) if latest_o > 0 else 0.0
+
+    # 1. Deteksi Blow-Off Upper Wick Rejection (v4.1/v5: bedakan candle HIJAU viral absorption vs blow-off MERAH!)
     recent_2 = candles_5m[-2:]
     meaningful_wicks = [
         _upper_wick_ratio(c)
@@ -155,8 +176,6 @@ def _evaluate_intraday_ohlcv(
     ]
     max_recent_wick_pct = (max(meaningful_wicks) * 100.0) if meaningful_wicks else 0.0
     max_red_wick_pct = (max(meaningful_red_wicks) * 100.0) if meaningful_red_wicks else 0.0
-    _, latest_o, _, _, latest_c, _ = candles_5m[-1]
-    latest_red_dump_pct = ((latest_c - latest_o) / latest_o * 100.0) if latest_o > 0 else 0.0
 
     # Viral Green Absorption: candle terbaru HIJAU, Higher-Low utuh, GreenVol >= 62%, Vol5m >= $25K, buyer dominan
     is_viral_green_absorption = (
@@ -165,7 +184,7 @@ def _evaluate_intraday_ohlcv(
         and (latest_c >= latest_o)
         and (green_vol_share_pct >= 62.0)
         and (pair.vol_m5 >= 25_000.0)
-        and (anti_top.buy_ratio_5m_pct >= 50.0)
+        and (anti_top.buy_ratio_5m_pct >= 52.0)
         and (anti_top.buy_ratio_1h_pct >= 52.0)
     )
     wick_veto_hit = (
@@ -175,26 +194,27 @@ def _evaluate_intraday_ohlcv(
         else (max_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
     )
 
-    # Pullback sehat hingga -48% diperbolehkan JIKA candle terakhir sudah mulai stabil/hijau (tidak sedang jatuh merah)
-    deep_crash_dump = drawdown_from_peak_pct >= 52.0
+    # Pullback sehat viral boleh hingga -45% HANYA jika reclaim hijau kuat; non-viral dibatasi ketat <= -28%!
+    max_allowed_dd = 45.0 if anti_top.is_viral_velocity else 28.0
+    deep_crash_dump = drawdown_from_peak_pct >= max_allowed_dd
     blowoff_wick_veto = (
         wick_veto_hit
-        or (drawdown_from_peak_pct >= 24.0 and latest_red_dump_pct <= -3.0)
-        or (latest_red_dump_pct <= -8.0)
+        or (drawdown_from_peak_pct >= 20.0 and latest_body_pct <= -2.5)
+        or (latest_body_pct <= -7.0)
         or deep_crash_dump
     )
     checks.append(
         GateCheck(
             id="blowoff_wick_guard",
             layer="STRUCTURE",
-            label="Anti-Blow-Off Top & Wick Rejection (5m OHLCV)",
+            label="Anti-Blow-Off Top & Max Drawdown (5m OHLCV)",
             passed=not blowoff_wick_veto,
             severity="PASS" if not blowoff_wick_veto else "VETO",
             actual=f"Wick atas {max_recent_wick_pct:.0f}% · DD dr peak -{drawdown_from_peak_pct:.1f}%",
             threshold=(
-                "Wick < 68% (Viral Green Absorption, RedWick < 48%)"
+                f"Wick < 68% (Viral Green Absorption), DD <= -{max_allowed_dd:.0f}%"
                 if is_viral_green_absorption
-                else "Wick < 48% di pucuk, DD <= -52% & tidak ada candle dump >= -8%"
+                else f"Wick < 48% di pucuk, DD <= -{max_allowed_dd:.0f}% & bebas candle dump >= -7%"
             ),
             detail=(
                 f"Penyerapan volatilitas viral sehat (candle HIJAU, GreenVol {green_vol_share_pct:.0f}%, wick {max_recent_wick_pct:.0f}% < 68%)."
@@ -202,18 +222,13 @@ def _evaluate_intraday_ohlcv(
                 else (
                     "Struktur candle 5m bersih tanpa jarum penolakan pucuk (blow-off top)."
                     if not blowoff_wick_veto
-                    else f"DITOLAK: Terdeteksi pucuk blow-off / dump keras (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
+                    else f"DITOLAK: Terdeteksi pucuk blow-off / crash dalam (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
                 )
             ),
         )
     )
 
-    # 2. Deteksi Volume Exhaustion di Pucuk (v4.1 FIX: kompensasi partial candle yang baru jalan 1–2 menit!)
-    # Jika candle 5m terakhir belum tutup (vols[-1] < 65% rolling pair.vol_m5 dari DexScreener),
-    # gunakan max(vols[-1], pair.vol_m5) agar candle 1-menit tidak memicu VETO EXHAUSTION_TOP palsu (kasus duk!).
-    effective_last_vol = max(vols[-1], pair.vol_m5) if vols[-1] < pair.vol_m5 * 0.65 else vols[-1]
-    effective_vols = vols[:-1] + [effective_last_vol]
-
+    # 2. Deteksi Volume Exhaustion di Pucuk
     window_vols = effective_vols[-12:]
     peak_candle_vol = max(window_vols) if window_vols else 0.0
     recent_2_avg_vol = sum(effective_vols[-2:]) / 2.0
@@ -224,8 +239,6 @@ def _evaluate_intraday_ohlcv(
     med_prior_vol = median(prior_vols) if prior_vols else recent_2_avg_vol
     vol_expansion = (effective_last_vol / med_prior_vol) if med_prior_vol > 0 else 1.0
 
-    # Jika harga masih duduk di dekat puncak (DD <= 15%) dan volume anjlok < 32% peak candle
-    # (kecuali volume absolut 5m masih deras >= $25K pada fase pause viral) -> Bensin Habis!
     vol_exhaustion_top = (
         anti_top.p_h1 >= 65.0
         and drawdown_from_peak_pct <= 15.0
@@ -250,19 +263,88 @@ def _evaluate_intraday_ohlcv(
         )
     )
 
-    # 3. Integritas Support & Higher-Low (jangan beli candle yang baru jebol support 30m terakhir!)
-    # Pada Pullback Reclaim viral (seperti $Zero di -40%), 2 candle sebelumnya wajar merah saat koreksi;
-    # selama support utuh, Higher Low utuh, dan candle terbaru sudah reclaim hijau -> sehat!
-    is_healthy_pullback_reclaim = (
+    # 3. v5 ANTI-FREEFALL VWAP & POST-PEAK CASCADE GUARD (Memutus jebakan dead-cat bounce & grafik turun bebas!)
+    # Pullback Reclaim viral (seperti $Zero di -40%): WAJIB candle terakhir hijau kuat (>= +2.5% body),
+    # mencetak Higher-Low lokal terhadap candle sebelumnya (latest_l >= prev_l * 0.99), GreenVol 4-bar >= 52%, dan VWAP >= -18%!
+    is_verified_viral_reclaim = (
+        anti_top.is_viral_velocity
+        and higher_low_intact
+        and (not support_broken)
+        and 8.0 <= drawdown_from_peak_pct <= 45.0
+        and latest_body_pct >= 2.5
+        and latest_l >= prev_l * 0.99
+        and green_vol_last4_pct >= 52.0
+        and vwap_dev_pct >= -18.0
+        and max_recent_wick_pct < (68.0 if is_viral_green_absorption else 42.0)
+    )
+
+    # Jebakan Freefall #1: Harga tenggelam di bawah VWAP 5m (mayoritas pembeli rugi & siap jual di setiap pantulan)
+    under_vwap_freefall = (vwap_dev_pct < -6.0) and (not is_verified_viral_reclaim)
+    # Jebakan Freefall #2: 2 candle 5m terakhir KEDUANYA MERAH (sedang meluncur turun!)
+    two_red_cascade = (latest_c < latest_o) and (prev_c < prev_o)
+    # Jebakan Freefall #3: Dead-cat micro-bounce setelah distribusi merah (DD >= 12% & GreenVol 4-bar < 48%)
+    dead_cat_red_dist = (
+        drawdown_from_peak_pct >= 12.0
+        and green_vol_last4_pct < 48.0
+        and (not is_verified_viral_reclaim)
+    )
+    # Jebakan Freefall #4: Post-peak Lower-Low & Lower-High cascade (candle terbaru merah jebol low candle sebelumnya saat DD >= 10%)
+    post_peak_ll_dump = (
+        drawdown_from_peak_pct >= 10.0
+        and latest_c < latest_o
+        and latest_l < prev_l * 0.995
+    )
+
+    freefall_veto = (
+        under_vwap_freefall
+        or two_red_cascade
+        or dead_cat_red_dist
+        or post_peak_ll_dump
+    )
+    freefall_reasons: list[str] = []
+    if under_vwap_freefall:
+        freefall_reasons.append(f"harga tenggelam {vwap_dev_pct:.1f}% di bawah VWAP 5m (jebakan bagholder)")
+    if two_red_cascade:
+        freefall_reasons.append("2 candle 5m beruntun merah (sedang meluncur turun)")
+    if dead_cat_red_dist:
+        freefall_reasons.append(f"dead-cat bounce volume merah (GreenVol 4-bar hanya {green_vol_last4_pct:.0f}%)")
+    if post_peak_ll_dump:
+        freefall_reasons.append("candle merah mencetak Lower-Low baru pasca-puncak")
+
+    checks.append(
+        GateCheck(
+            id="anti_freefall_vwap",
+            layer="STRUCTURE",
+            label="Anti-Freefall 5m VWAP & Post-Peak Cascade Guard",
+            passed=not freefall_veto,
+            severity="PASS" if not freefall_veto else "VETO",
+            actual=f"VWAP {vwap_dev_pct:+.1f}% · GreenVol4 {green_vol_last4_pct:.0f}% · Body {latest_body_pct:+.1f}%",
+            threshold="Di atas/dekat VWAP (>= -6%), GreenVol4 >= 48%, bebas 2-red cascade",
+            detail=(
+                f"Reclaim Pullback Viral terverifikasi (body {latest_body_pct:+.1f}%, GreenVol4 {green_vol_last4_pct:.0f}%, VWAP {vwap_dev_pct:+.1f}%)."
+                if is_verified_viral_reclaim and not freefall_veto
+                else (
+                    f"Tren sehat di atas/dekat VWAP 5m ({vwap_dev_pct:+.1f}%, GreenVol4 {green_vol_last4_pct:.0f}%)."
+                    if not freefall_veto
+                    else f"DITOLAK (Anti-Freefall): {', '.join(freefall_reasons)}."
+                )
+            ),
+        )
+    )
+
+    # 4. Integritas Support & Higher-Low
+    is_healthy_pullback_reclaim = is_verified_viral_reclaim or (
         higher_low_intact
         and (not support_broken)
-        and 8.0 <= drawdown_from_peak_pct <= 48.0
+        and (not freefall_veto)
+        and 6.0 <= drawdown_from_peak_pct <= 28.0
         and latest_c >= latest_o
+        and green_vol_last4_pct >= 52.0
         and (max_recent_wick_pct < (68.0 if is_viral_green_absorption else 42.0))
     )
 
     structure_broken = support_broken or (
-        (not higher_low_intact) and (green_vol_share_pct < 42.0) and (not is_healthy_pullback_reclaim)
+        (not higher_low_intact) and (green_vol_share_pct < 48.0) and (not is_healthy_pullback_reclaim)
     )
     checks.append(
         GateCheck(
@@ -271,7 +353,7 @@ def _evaluate_intraday_ohlcv(
             label="Integritas Support & Higher-Low 5m",
             passed=not structure_broken,
             severity="PASS" if not structure_broken else "VETO",
-            actual=f"HL={'Ya' if higher_low_intact else 'Tidak'} · GreenVol {green_vol_share_pct:.0f}%",
+            actual=f"HL={'Ya' if higher_low_intact else 'Tidak'} · GreenVol6 {green_vol_share_pct:.0f}%",
             threshold="Close di atas support 30m & tidak lower-low dengan volume merah",
             detail=(
                 "Pullback Higher-Low Reclaim sehat (seller terserap di atas support utama)."
@@ -290,15 +372,19 @@ def _evaluate_intraday_ohlcv(
     if blowoff_wick_veto or vol_exhaustion_top:
         regime: StructureRegime = "EXHAUSTION_TOP"
         summary = f"Pucuk blow-off/exhaustion (wick {max_recent_wick_pct:.0f}%, vol/peak {recent_to_peak_ratio * 100:.0f}%)."
-    elif structure_broken:
+    elif freefall_veto or structure_broken:
         regime = "BREAKDOWN_DUMP"
-        summary = f"Support 5m jebol (GreenVol {green_vol_share_pct:.0f}%)."
+        summary = (
+            f"Freefall/Breakdown ({freefall_reasons[0]})"
+            if freefall_reasons
+            else f"Support 5m jebol (GreenVol {green_vol_share_pct:.0f}%)."
+        )
     elif is_healthy_pullback_reclaim or (drawdown_from_peak_pct >= 6.0 and higher_low_intact):
         regime = "PULLBACK_RECLAIM"
-        summary = f"Pullback Reclaim sehat (HL terjaga, DD -{drawdown_from_peak_pct:.1f}%, Wick {max_recent_wick_pct:.0f}%)."
+        summary = f"Pullback Reclaim sehat (VWAP {vwap_dev_pct:+.1f}%, DD -{drawdown_from_peak_pct:.1f}%, GreenVol4 {green_vol_last4_pct:.0f}%)."
     else:
         regime = "CONTINUATION_BREAKOUT"
-        summary = f"Continuation Breakout sehat (Wick {max_recent_wick_pct:.0f}%, GreenVol {green_vol_share_pct:.0f}%)."
+        summary = f"Continuation Breakout di atas VWAP ({vwap_dev_pct:+.1f}%, GreenVol4 {green_vol_last4_pct:.0f}%)."
 
     return StructureResult(
         passed=passed,
@@ -313,6 +399,8 @@ def _evaluate_intraday_ohlcv(
         range_position_pct=round(max(0.0, 100.0 - drawdown_from_peak_pct), 1),
         green_vol_share_pct=round(green_vol_share_pct, 1),
         higher_low_intact=higher_low_intact,
+        vwap_deviation_pct=round(vwap_dev_pct, 1),
+        green_vol_last4_pct=round(green_vol_last4_pct, 1),
         summary=summary,
     )
 

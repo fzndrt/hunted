@@ -1090,3 +1090,251 @@ def test_watchlist_auto_rescan_persistence_sqlite_and_upstash() -> None:
         assert deleted_keys == [m2]
 
     asyncio.run(_run())
+
+
+def test_v5_freefall_dead_cat_bounce_below_vwap_and_two_red_cascade_are_vetoed() -> None:
+    """v5: Koin terjun bebas (dead-cat micro-bounce di bawah 5m VWAP atau 2 candle merah beruntun) WAJIB HARD VETO."""
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    pair = _make_pair(
+        market_cap=145_000.0,
+        liquidity_usd=26_000.0,
+        vol_m5=18_000.0,
+        vol_h1=195_000.0,
+        vol_h24=240_000.0,
+        buys_m5=110,
+        sells_m5=95,
+        buys_h1=650,
+        sells_h1=540,
+        price_change_m5=1.2,
+        price_change_h1=45.0,
+        price_change_h24=180.0,
+        pair_created_at_ms=now_ms - 55 * 60_000,
+    )
+    at = evaluate_anti_top(pair, cfg, now_ms=now_ms)
+    assert at.passed
+
+    # Kasus A: Pump dari $30K ke $250K lalu terjun -42% ke $145K (di bawah 5m VWAP ~$190K) + pantulan tipis dead-cat
+    freefall_dead_cat = [
+        [1, 0.000030, 0.000060, 0.000028, 0.000055, 15_000],
+        [2, 0.000055, 0.000140, 0.000052, 0.000135, 35_000],
+        [3, 0.000135, 0.000250, 0.000130, 0.000240, 95_000],  # Puncak besar -> VWAP tinggi (~0.00019)
+        [4, 0.000240, 0.000245, 0.000180, 0.000185, 65_000],  # Dump merah 1
+        [5, 0.000185, 0.000190, 0.000140, 0.000144, 52_000],  # Dump merah 2
+        [6, 0.000144, 0.000150, 0.000141, 0.000146, 12_000],  # Dead-cat micro bounce +1.4% jauh di bawah VWAP
+    ]
+    st_dead = evaluate_candle_structure(pair, at, freefall_dead_cat, [], cfg)
+    assert not st_dead.passed
+    assert st_dead.regime == "BREAKDOWN_DUMP"
+    assert st_dead.vwap_deviation_pct < -6.0
+    assert any(c.id == "anti_freefall_vwap" and not c.passed for c in st_dead.checks)
+
+    # Kasus B: 2 candle 5m merah beruntun pasca-puncak (cascade) meski belum jatuh terlalu dalam
+    two_red_cascade = [
+        [1, 0.000080, 0.000105, 0.000078, 0.000102, 18_000],
+        [2, 0.000102, 0.000130, 0.000100, 0.000126, 26_000],
+        [3, 0.000126, 0.000152, 0.000124, 0.000148, 34_000],
+        [4, 0.000148, 0.000155, 0.000140, 0.000144, 22_000],
+        [5, 0.000144, 0.000146, 0.000135, 0.000137, 25_000],  # Merah 1
+        [6, 0.000137, 0.000139, 0.000128, 0.000131, 24_000],  # Merah 2 (Lower Low)
+    ]
+    st_red = evaluate_candle_structure(pair, at, two_red_cascade, [], cfg)
+    assert not st_red.passed
+    assert st_red.regime == "BREAKDOWN_DUMP"
+    assert any(c.id == "anti_freefall_vwap" and not c.passed for c in st_red.checks)
+
+
+def test_v5_paid_boost_exit_liquidity_trap_is_hard_vetoed() -> None:
+    """v5: Koin DexScreener Paid Boost (single pool / momentum biasa) WAJIB HARD VETO sebagai jebakan exit liquidity."""
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+
+    boosted_trap = _make_pair(
+        market_cap=110_000.0,
+        liquidity_usd=22_000.0,
+        vol_m5=14_000.0,
+        vol_h1=95_000.0,
+        buys_m5=72,
+        sells_m5=60,
+        buys_h1=410,
+        sells_h1=350,
+        price_change_m5=1.8,
+        price_change_h1=38.0,
+        is_boosted=True,
+        pool_count=1,
+        feed_sources=("gecko_trending_5m",),
+        pair_created_at_ms=now_ms - 50 * 60_000,
+    )
+    at_trap = evaluate_anti_top(boosted_trap, cfg, now_ms=now_ms)
+    assert not at_trap.passed
+    assert any(c.id == "paid_boost_guard" and not c.passed for c in at_trap.checks)
+
+    # Exception ketat: Paid Boost hanya boleh lewat jika multi-pool + 2 feed organik + Vol5m >= $25K + Buy5m >= 55% + 5m >= +2%
+    boosted_viral_multi = _make_pair(
+        market_cap=165_000.0,
+        liquidity_usd=36_000.0,
+        vol_m5=34_000.0,
+        vol_h1=210_000.0,
+        buys_m5=210,
+        sells_m5=140,
+        buys_h1=1_200,
+        sells_h1=880,
+        price_change_m5=5.5,
+        price_change_h1=65.0,
+        is_boosted=True,
+        pool_count=2,
+        feed_sources=("gecko_trending_5m", "dex_meteora"),
+        pair_created_at_ms=now_ms - 55 * 60_000,
+    )
+    at_ok = evaluate_anti_top(boosted_viral_multi, cfg, now_ms=now_ms)
+    assert at_ok.passed, f"Qualified viral multi-pool boosted breakout failed: {[c.detail for c in at_ok.checks if not c.passed]}"
+
+
+def test_v5_hollow_cabal_shell_and_atx_nano_swarm_are_hard_vetoed() -> None:
+    """v5: Hollow Cabal Shell (MC/Holder > $320) & pola ATX (Ya9PEJ: Top10 0.44%, High holder correlation, RC 12901) WAJIB VETO."""
+    now_ms = 1_750_000_000_000
+
+    # Kasus A: Hollow Cabal Shell ($180K MC dengan hanya 360 holders = $500/holder > $320/holder)
+    hollow_pair = _make_pair(
+        market_cap=180_000.0,
+        liquidity_usd=32_000.0,
+        pair_created_at_ms=now_ms - 50 * 60_000,
+    )
+    hollow_rc = _clean_rugcheck()
+    hollow_rc["totalHolders"] = 360
+    sec_hollow = evaluate_security(hollow_pair, hollow_rc, now_ms=now_ms)
+    assert not sec_hollow.passed
+    assert sec_hollow.mc_per_holder_usd == 500.0
+    assert any(c.id == "organic_holders" and not c.passed for c in sec_hollow.checks)
+
+    # Kasus B: Replay forensik ATX (Ya9PEJA9UZmbT5aim46TA6cPCkTNfsqEn1aEVrnpump) — Bundled Nano-Swarm Anomaly!
+    atx_pair = _make_pair(
+        mint="Ya9PEJA9UZmbT5aim46TA6cPCkTNfsqEn1aEVrnpump",
+        symbol="ATX",
+        name="ATX",
+        market_cap=3_250_000_000.0,
+        liquidity_usd=520_000.0,
+        vol_m5=1_113.0,
+        pair_created_at_ms=now_ms - 72 * 3_600_000,
+    )
+    atx_rc = _clean_rugcheck()
+    atx_rc["score_normalised"] = 12_901
+    atx_rc["totalHolders"] = 3_278
+    atx_rc["risks"] = [
+        {"name": "High holder correlation", "level": "danger"},
+        {"name": "High market cap per holder", "level": "warn"},
+    ]
+    atx_rc["topHolders"] = [
+        {"owner": f"AtxSwarm{i}11111111111111111111111111111111", "pct": 0.06 - i * 0.002}
+        for i in range(10)
+    ]
+    sec_atx = evaluate_security(atx_pair, atx_rc, now_ms=now_ms)
+    assert not sec_atx.passed
+    assert sec_atx.pareto_status == "NANO_SWARM_DETECTED"
+    assert any(c.id == "rugcheck_integrity" and not c.passed for c in sec_atx.checks)
+    assert any(c.id == "organic_holders" and not c.passed for c in sec_atx.checks)
+
+
+def test_v5_extreme_wash_churn_superfiona_trap_is_hard_vetoed() -> None:
+    """v5: Jebakan wash-bot churn ekstrem ala SuperFIONA (Turn1h=38x, 1h=+23%, 5m=-0.05%) WAJIB HARD VETO."""
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    wash_pair = _make_pair(
+        symbol="SuperFIONA",
+        market_cap=140_000.0,
+        liquidity_usd=28_000.0,
+        vol_m5=82_000.0,
+        vol_h1=5_400_000.0,  # Turnover 1h = 38.6x MC!
+        vol_h24=5_400_000.0,
+        buys_m5=210,
+        sells_m5=180,
+        buys_h1=5_200,
+        sells_h1=4_800,
+        price_change_m5=-0.05,
+        price_change_h1=23.0,
+        price_change_h24=23.0,
+        pair_created_at_ms=now_ms - 55 * 60_000,
+    )
+    at_wash = evaluate_anti_top(wash_pair, cfg, now_ms=now_ms)
+    assert not at_wash.passed
+    assert any(c.id == "orderflow_quality" and not c.passed for c in at_wash.checks)
+
+
+def test_v5_early_mihao_and_stonk_winner_dna_pass_with_high_score() -> None:
+    """v5: Simulasi fase awal koin DNA Raksasa Organik (mihao / STONK): Non-boosted, Socials+Web, Multi-Pool, $89/holder, Above-VWAP."""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.003"},
+        {"outAmount": "98900000", "priceImpactPct": "0.004"},
+        {"outAmount": "10000000", "priceImpactPct": "0.012"},
+        {"outAmount": "962000000", "priceImpactPct": "0.014"},
+        cfg,
+    )
+    winner_pair = _make_pair(
+        mint="4CxjZyMNoF1p6eXHXHv1TWpS2X47CuUmLwtGe18spump",
+        symbol="mihao",
+        name="ni hao cat",
+        market_cap=165_000.0,
+        liquidity_usd=36_500.0,
+        vol_m5=28_500.0,
+        vol_h1=195_000.0,
+        vol_h6=290_000.0,
+        vol_h24=290_000.0,
+        buys_m5=185,
+        sells_m5=125,  # 59.7% buy
+        buys_h1=1_280,
+        sells_h1=940,  # 57.7% buy
+        buys_h6=1_850,
+        sells_h6=1_350,
+        buys_h24=1_850,
+        sells_h24=1_350,
+        price_change_m5=6.5,
+        price_change_h1=72.0,
+        price_change_h24=165.0,
+        pool_count=3,
+        is_boosted=False,
+        has_socials=True,
+        social_count=2,
+        has_website=True,
+        has_image=True,
+        pair_created_at_ms=now_ms - 85 * 60_000,
+        feed_sources=("gecko_trending_1h", "dex_meteora", "dex_pumpswap"),
+    )
+    winner_rc = _clean_rugcheck()
+    winner_rc["score_normalised"] = 1
+    winner_rc["totalHolders"] = 1_850  # $89.2/holder!
+    winner_rc["risks"] = []
+    winner_rc["topHolders"] = [
+        {"owner": "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", "pct": 14.0},  # LP Vault
+        {"owner": "HolderW11111111111111111111111111111111111", "pct": 3.4},
+        {"owner": "HolderW21111111111111111111111111111111111", "pct": 2.6},
+        {"owner": "HolderW31111111111111111111111111111111111", "pct": 2.0},
+        {"owner": "HolderW41111111111111111111111111111111111", "pct": 1.6},
+        {"owner": "HolderW51111111111111111111111111111111111", "pct": 1.3},
+    ]
+    winner_candles_5m = [
+        [1, 0.000095, 0.000112, 0.000092, 0.000110, 14_000],
+        [2, 0.000110, 0.000130, 0.000108, 0.000126, 18_500],
+        [3, 0.000126, 0.000142, 0.000122, 0.000138, 21_000],
+        [4, 0.000138, 0.000145, 0.000131, 0.000136, 12_500],  # Pullback sehat volume tipis
+        [5, 0.000136, 0.000156, 0.000135, 0.000154, 24_000],  # Reclaim hijau kuat
+        [6, 0.000154, 0.000168, 0.000152, 0.000165, 28_500],  # Breakout Above-VWAP
+    ]
+    sec = evaluate_security(winner_pair, winner_rc, now_ms=now_ms)
+    at = evaluate_anti_top(winner_pair, cfg, now_ms=now_ms)
+    st = evaluate_candle_structure(winner_pair, at, winner_candles_5m, [], cfg)
+    audit = score_and_finalize(winner_pair, sec, at, exec_ok, cfg, structure=st)
+
+    assert sec.passed, f"Winner L1 failed: {[c.detail for c in sec.checks if not c.passed]}"
+    assert sec.mc_per_holder_usd < 100.0
+    assert at.passed, f"Winner L2A failed: {[c.detail for c in at.checks if not c.passed]}"
+    assert st.passed and st.vwap_deviation_pct > 0.0
+    assert audit.verdict == "ENTRY_READY"
+    assert audit.total_score >= 85, f"Expected >= 85 score for Winner-DNA, got {audit.total_score}"
+

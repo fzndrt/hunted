@@ -106,7 +106,7 @@ def evaluate_anti_top(
         and pair.vol_h1 >= 250_000.0
         and pair.vol_m5 >= 15_000.0
         and liq_usd >= 40_000.0
-        and -3.5 <= p_m5 <= 18.0
+        and 0.0 <= p_m5 <= 18.0
     )
     corridor_ok = (corridor is not None) and ((not is_corridor_d) or corridor_d_qualified)
     if is_corridor_d and not corridor_d_qualified:
@@ -197,30 +197,49 @@ def evaluate_anti_top(
         )
     )
 
-    # 3. Parabolic Candle 5m/1h Cap (v4: Viral Velocity menyerahkan uji pucuk vs pullback ke Layer 2B OHLCV!)
+    # 3. Parabolic Cap & Anti-Falling-Knife Floor (v5: Hentikan beli koin yang sedang merah/jatuh bebas!)
     is_proven_runner = age_minutes >= 120.0 and tx_24h >= 1_200
     effective_max_h1 = cfg.max_h1_change_pct if is_proven_runner else cfg.max_fresh_h1_change_pct
     effective_max_m5 = 18.0 if is_corridor_d else cfg.max_m5_change_pct
-    h1_floor = -12.0 if (is_daily_coin and p_m5 >= 1.5) else -10.0
 
-    m5_falling = p_m5 < -3.5
+    # v5 Anti-Falling-Knife:
+    # - Koin biasa: WAJIB 5m >= 0.0% & 1h >= -2.0% (dilarang beli candle merah yang mulai turun!)
+    # - Hyper-Viral / Viral Pullback aktif (Vol5m >= $25K & Buy5m >= 52% & Buy1h >= 53%): toleransi ringan hingga -1.5% 5m
+    # - Koin Harian (>= 20j): wajib 5m >= +1.0% & 1h >= -4.0% (konfirmasi bangun hijau!)
+    viral_mild_pullback_allowed = (
+        is_viral_velocity
+        and pair.vol_m5 >= 25_000.0
+        and buy_ratio_5m >= 52.0
+        and buy_ratio_1h >= 53.0
+    )
+    if is_daily_coin:
+        m5_floor = 1.0
+        h1_floor = -4.0
+    elif viral_mild_pullback_allowed:
+        m5_floor = -1.5
+        h1_floor = 0.0
+    else:
+        m5_floor = 0.0
+        h1_floor = -2.0
+
+    m5_falling = p_m5 < m5_floor
     h1_falling = p_h1 < h1_floor
     m5_too_hot = p_m5 > effective_max_m5
-    # Kunci v4: koin viral ($Zero di $244K/$267K dgn +740% 1h & Vol5m $50K-$110K) TIDAK langsung dibunuh oleh cap 1h kaku;
-    # melainkan diloloskan ke Layer 2B OHLCV 5m untuk membedakan Pullback/Base sehat vs Blow-Off Top!
+    # Kunci v4/v5: koin viral ($Zero di $244K/$267K dgn +740% 1h & Vol5m $50K-$110K) TIDAK dibunuh oleh cap 1h kaku;
+    # melainkan divalidasi ketat lewat Layer 2B OHLCV 5m (VWAP + Anti-Freefall Cascade)!
     h1_too_hot = (p_h1 > effective_max_h1) and (not is_viral_velocity)
     parabolic_ok = (not m5_falling) and (not h1_falling) and (not m5_too_hot) and (not h1_too_hot)
 
     if parabolic_ok and is_viral_velocity and p_h1 > effective_max_h1:
         parabolic_detail = (
             f"Ledakan viral terdeteksi (1h {p_h1:+.0f}%, Vol5m ${pair.vol_m5:,.0f}, 5m {p_m5:+.1f}%) — "
-            "validasi pucuk vs pullback dialihkan ke struktur candle OHLCV 5m."
+            "validasi pucuk vs pullback dialihkan ke struktur candle OHLCV 5m & VWAP."
         )
     elif parabolic_ok:
-        parabolic_detail = "Kecepatan harga sehat (belum pucuk vertikal dan tidak sedang jatuh)."
+        parabolic_detail = "Kecepatan harga hijau terkendali (belum pucuk vertikal & tidak sedang jatuh bebas)."
     elif m5_falling or h1_falling:
         parabolic_detail = (
-            f"DITOLAK: Tren sedang jatuh/sekarat (5m {p_m5:+.1f}%, 1h {p_h1:+.1f}%) — jangan beli pisau jatuh."
+            f"DITOLAK (Anti-Freefall): Harga sedang melemah/merah (5m {p_m5:+.1f}% < {m5_floor:+.1f}%, 1h {p_h1:+.1f}% < {h1_floor:+.1f}%) — dilarang tangkap pisau jatuh."
         )
     else:
         parabolic_detail = (
@@ -231,11 +250,11 @@ def evaluate_anti_top(
         GateCheck(
             id="parabolic_cap",
             layer="ANTI_TOP",
-            label="Kontrol Kecepatan 5m/1h & Delegasi Viral ke OHLCV",
+            label="Anti-Freefall Floor & Kontrol Kecepatan 5m/1h",
             passed=parabolic_ok,
             severity="PASS" if parabolic_ok else ("VETO" if (m5_falling or h1_falling) else "WAIT_DIP"),
             actual=f"5m {p_m5:+.1f}% · 1h {p_h1:+.1f}%" + (" (VIRAL)" if is_viral_velocity else ""),
-            threshold=f"5m [-3.5%, +{effective_max_m5:.0f}%] · 1h <= +{effective_max_h1:.0f}% (atau Viral OHLCV)",
+            threshold=f"5m [{m5_floor:+.1f}%, +{effective_max_m5:.0f}%] · 1h [{h1_floor:+.1f}%, +{effective_max_h1:.0f}%] (atau Viral OHLCV)",
             detail=parabolic_detail,
         )
     )
@@ -313,6 +332,12 @@ def evaluate_anti_top(
     )
     wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < 22.0
     sideways_churn = (not is_daily_coin) and turnover_h1_ratio >= 1.8 and p_h1 < 8.0
+    # v5 Extreme Wash-Churn (kasus SuperFIONA: Turn1h 38.8x tapi harga flat +23% / 5m -0.05%)
+    extreme_wash_churn = (
+        (not is_daily_coin)
+        and turnover_h1_ratio >= 8.0
+        and (p_h1 < 60.0 or p_m5 < 1.0)
+    )
 
     effective_min_tx = compute_effective_min_tx_24h(age_minutes)
     tx_count_ok = tx_24h >= effective_min_tx
@@ -324,12 +349,17 @@ def evaluate_anti_top(
         and (not vol_dying)
         and (not wash_bot_5m)
         and (not sideways_churn)
+        and (not extreme_wash_churn)
         and tx_count_ok
         and ticket_1h_ok
     )
     if wash_bot_5m:
         flow_detail = (
             f"DITOLAK: Terdeteksi wash-bot/micro-bot 5m ({tx_5m} tx hanya ${pair.vol_m5:,.0f} = ${avg_ticket_5m:.1f}/tx)."
+        )
+    elif extreme_wash_churn:
+        flow_detail = (
+            f"DITOLAK: Extreme Wash-Bot Churn (turnover 1h {turnover_h1_ratio:.1f}x MC tetapi harga tidak naik proporsional: 1h {p_h1:+.1f}%, 5m {p_m5:+.1f}%)."
         )
     elif vol_dying:
         flow_detail = (
@@ -373,12 +403,15 @@ def evaluate_anti_top(
         )
     )
 
-    # 7. Tekanan Beli, Whale Absorption & Akumulasi 6h (Anti-Dead-Cat Bounce pada koin distribusi!)
-    whale_siphon = pair.buys_m5 >= 12 and buy_ratio_5m >= 62.0 and p_m5 < -1.0
+    # 7. Tekanan Beli Net-Positive (v5: Buyer WAJIB menang >= 52%!) & Anti-Whale-Siphon
+    whale_siphon = pair.buys_m5 >= 12 and buy_ratio_5m >= 62.0 and p_m5 < -0.5
     whale_absorption = (
-        p_m5 >= 2.0 and 42.0 <= buy_ratio_5m < 48.0 and buy_ratio_1h >= 48.0
+        p_m5 >= 3.0
+        and pair.vol_m5 >= 15_000.0
+        and 44.0 <= buy_ratio_5m < 52.0
+        and buy_ratio_1h >= 51.0
     )
-    h6_sell_bleed = age_minutes >= 360.0 and tx_6h >= 20 and buy_ratio_6h < 47.0
+    h6_sell_bleed = age_minutes >= 360.0 and tx_6h >= 20 and buy_ratio_6h < 49.0
 
     if whale_siphon:
         siphon_ok = False
@@ -390,47 +423,66 @@ def evaluate_anti_top(
         siphon_ok = False
         siphon_sev = "VETO"
         siphon_detail = (
-            f"DITOLAK: Distribusi multi-jam (6h buy hanya {buy_ratio_6h:.0f}%) — rawan dead-cat bounce lalu turun."
+            f"DITOLAK: Distribusi multi-jam (6h buy hanya {buy_ratio_6h:.0f}% < 49%) — rawan dead-cat bounce lalu terjun bebas."
         )
-    elif p_m5 >= 2.0:
-        siphon_ok = buy_ratio_5m >= 42.0 and buy_ratio_1h >= 48.0
-        siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
+    elif whale_absorption:
+        siphon_ok = True
+        siphon_sev = "PASS"
         siphon_detail = (
-            f"Akumulasi Whale terdeteksi (5m {p_m5:+.1f}% dengan {buy_ratio_5m:.0f}% buy tx — order beli lebih besar dari jual)."
-            if whale_absorption and siphon_ok
-            else (
-                "Dominasi buyer sehat tanpa pola distribusi diam-diam."
-                if siphon_ok
-                else "Tekanan jual 1h/5m masih terlalu berat — tunggu penyerapan selesai."
-            )
-        )
-    elif p_m5 < 0.0:
-        siphon_ok = buy_ratio_5m >= 50.0 and buy_ratio_1h >= 49.0
-        siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
-        siphon_detail = (
-            "Pullback ringan masih diserap buyer."
-            if siphon_ok
-            else "Harga 5m minus disertai dominasi jual — tunggu buyer kembali memegang kendali."
+            f"Akumulasi Whale terdeteksi (5m {p_m5:+.1f}% dengan {buy_ratio_5m:.0f}% buy tx & Vol5m ${pair.vol_m5:,.0f} — order beli besar menyerap retail TP)."
         )
     else:
-        siphon_ok = buy_ratio_5m >= 48.0 and buy_ratio_1h >= 49.0
-        siphon_sev = "PASS" if siphon_ok else "WAIT_DIP"
+        siphon_ok = buy_ratio_5m >= 52.0 and buy_ratio_1h >= 52.0
+        siphon_sev = "PASS" if siphon_ok else ("VETO" if (buy_ratio_5m < 47.0 or buy_ratio_1h < 48.0) else "WAIT_DIP")
         siphon_detail = (
-            "Dominasi buyer sehat tanpa pola distribusi diam-diam."
+            f"Dominasi buyer bersih (5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% buy)."
             if siphon_ok
-            else "Tekanan jual sedang mendominasi — tunggu penyerapan seller selesai."
+            else f"Tekanan beli belum dominan (5m {buy_ratio_5m:.0f}%, 1h {buy_ratio_1h:.0f}% < 52%) — rawan distribusi/turun bebas."
         )
 
     checks.append(
         GateCheck(
             id="buy_pressure",
             layer="ANTI_TOP",
-            label="Tekanan Beli, Whale Absorption & Akumulasi 6h",
+            label="Dominasi Buyer Net-Positive (>=52%) & Anti-Siphon",
             passed=siphon_ok,
             severity=siphon_sev,
             actual=f"5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% · 6h {buy_ratio_6h:.0f}% buy",
-            threshold=">=48% buy (atau >=42% Whale Absorption), 6h>=47% & anti-siphon",
+            threshold="5m>=52% & 1h>=52% (atau Whale Absorption +3%), 6h>=49%",
             detail=siphon_detail,
+        )
+    )
+
+    # 7b. Paid-Boost Exit-Liquidity Trap Guard (v5: Seluruh raksasa organik mihao/STONK/$Zero/PAIR/duk = Non-Boosted!)
+    from .config import ORGANIC_FEED_SOURCES
+
+    organic_feeds_cnt = sum(1 for s in pair.feed_sources if s in ORGANIC_FEED_SOURCES)
+    boost_override_ok = (
+        organic_feeds_cnt >= 2
+        and pair.pool_count >= 2
+        and pair.vol_m5 >= 25_000.0
+        and buy_ratio_5m >= 55.0
+        and p_m5 >= 2.0
+    )
+    paid_boost_ok = (not pair.is_boosted) or boost_override_ok
+    checks.append(
+        GateCheck(
+            id="paid_boost_guard",
+            layer="ANTI_TOP",
+            label="Anti-Jebakan Paid Boost Exit-Liquidity",
+            passed=paid_boost_ok,
+            severity="PASS" if paid_boost_ok else "VETO",
+            actual="Organik (Tanpa Boost)" if not pair.is_boosted else f"PAID BOOST ({organic_feeds_cnt} org, {pair.pool_count} pool)",
+            threshold="Non-Boosted (atau >=2 org feed + >=2 pool + Vol5m>=$25K + Buy>=55%)",
+            detail=(
+                "100% pertumbuhan organik tanpa iklan Paid Boost DexScreener."
+                if not pair.is_boosted
+                else (
+                    "Ada Paid Boost tetapi terkonfirmasi kuat oleh multi-pool & arus organik masif."
+                    if paid_boost_ok
+                    else "DITOLAK (Jebakan Paid Boost): Token membeli boost DexScreener tanpa konfirmasi multi-pool & demand organik kuat — sangat rawan dump bebas."
+                )
+            ),
         )
     )
 
@@ -456,23 +508,25 @@ def evaluate_anti_top(
 
     # 9. Deteksi Sleeper Revival / Daily Consolidation Candidate (usia >= 12 jam yg baru bangun)
     is_early_pre_ath_wave = (
-        0.5 <= p_m5 <= 22.0
+        1.0 <= p_m5 <= 22.0
         and -2.0 <= p_h1 <= 85.0
         and p_h6 <= 120.0
         and p_h24 <= 220.0
     )
     has_revival_buyers = (
-        buy_ratio_5m >= 50.0 and buy_ratio_1h >= 50.0 and buy_ratio_6h >= 49.0 and pair.buys_m5 >= 5
+        buy_ratio_5m >= 52.0 and buy_ratio_1h >= 52.0 and buy_ratio_6h >= 50.0 and pair.buys_m5 >= 5
     )
     is_sleeper_revival = (
         age_minutes >= 720.0
         and corridor_ok
         and headroom_ok
         and pre_ath_ok
+        and paid_boost_ok
         and has_volume_wakeup
         and is_early_pre_ath_wave
         and has_revival_buyers
     )
+    has_community_presence = bool(pair.has_socials or pair.has_website)
 
     passed = all(c.passed for c in checks)
     has_hard_veto = any((not c.passed) and c.severity == "VETO" for c in checks)
@@ -513,4 +567,5 @@ def evaluate_anti_top(
         is_corridor_d_viral_base=corridor_d_qualified,
         is_hyper_viral_fasttrack=is_hyper_viral_fasttrack,
         is_steady_organic_climber=is_steady_organic_climber,
+        has_community_presence=has_community_presence,
     )

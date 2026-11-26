@@ -102,10 +102,14 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     totalTxH1 >= 600;
   const isPullbackContractionOk = volM5 >= 12_000;
 
+  const isBoosted = asNum(pair.boosts?.active) > 0;
+  const hasCommunityPresence =
+    (Array.isArray(pair.info?.socials) && pair.info.socials.length > 0) ||
+    (Array.isArray(pair.info?.websites) && pair.info.websites.length > 0);
   const { corridor: rawCorridor, redZoneReason } = classifyCleanCorridor(spotMc, cfg.includeMidCapCorridor);
   const isCorridorD = rawCorridor?.id === 'D_VIRAL_BASE';
   const isCorridorDViralBase =
-    isCorridorD && volH1 >= 250_000 && volM5 >= 15_000 && liqUsd >= 40_000 && pM5 >= -3.5 && pM5 <= 18.0;
+    isCorridorD && volH1 >= 250_000 && volM5 >= 15_000 && liqUsd >= 40_000 && pM5 >= 0.0 && pM5 <= 18.0;
   const corridor = isCorridorD && !isCorridorDViralBase ? null : rawCorridor;
 
   // 1. Corridor Check (A–D Viral Base)
@@ -190,35 +194,38 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     waitReasons.push(`Terlalu baru (${Math.round(ageMinutes)}m < 20m) — tunggu lolos dump sniper awal`);
   }
 
-  // 3. Anti-Parabolic Cap (v4: Viral Velocity bypasses rigid 1h cap!) & Anti-Dead-Bounce Floor
+  // 3. Anti-Parabolic Cap & Anti-Freefall Floor (v5: Stop buying falling knives!)
   const isProvenRunner = ageMinutes >= 120 && totalTx24h >= 1_200;
   const effectiveMaxH1 = isProvenRunner ? cfg.maxH1ChangePct : Math.min(cfg.maxH1ChangePct, 115);
   const effectiveMaxM5 = isCorridorDViralBase ? 18.0 : cfg.maxM5ChangePct;
-  const h1Floor = isDailyCoin && pM5 >= 1.5 ? -12.0 : -10.0;
+  const viralMildPullbackAllowed =
+    isViralVelocity && volM5 >= 25_000 && buyRatio5mPctEarly >= 52.0 && buyRatio1hPctEarly >= 53.0;
+  const m5Floor = isDailyCoin ? 1.0 : viralMildPullbackAllowed ? -1.5 : 0.0;
+  const h1Floor = isDailyCoin ? -4.0 : viralMildPullbackAllowed ? 0.0 : -2.0;
   const m5TooHot = pM5 > effectiveMaxM5;
-  const m5FallingKnife = pM5 < -3.5 || pH1 < h1Floor;
+  const m5FallingKnife = pM5 < m5Floor || pH1 < h1Floor;
   const h1TooExtended = pH1 > effectiveMaxH1 && !isViralVelocity;
   const momentumClean = !m5TooHot && !m5FallingKnife && !h1TooExtended;
 
   checks.push({
     id: 'anti_parabolic',
     layer: 'ANTI_TOP',
-    label: 'Kontrol Kecepatan 5m/1h & Delegasi Viral',
+    label: 'Anti-Freefall Floor & Kontrol Kecepatan 5m/1h',
     passed: momentumClean,
     severity: m5FallingKnife ? 'HARD_VETO' : 'WAIT_DIP',
     actual: `5m ${pM5 >= 0 ? '+' : ''}${pM5.toFixed(1)}% · 1h ${pH1 >= 0 ? '+' : ''}${pH1.toFixed(1)}%${isViralVelocity ? ' (VIRAL)' : ''}`,
-    threshold: `5m -3.5%..+${effectiveMaxM5}% · 1h <= +${effectiveMaxH1}% (atau Viral Velocity)`,
+    threshold: `5m ${m5Floor.toFixed(1)}%..+${effectiveMaxM5}% · 1h ${h1Floor.toFixed(1)}%..+${effectiveMaxH1}% (atau Viral)`,
     detail: m5TooHot
       ? `Candle 5m sudah melonjak vertikal +${pM5.toFixed(1)}% — dilarang kejar pucuk, tunggu koreksi sehat.`
       : h1TooExtended
       ? `Kenaikan 1 jam +${pH1.toFixed(1)}% tanpa arus modal viral (> +${effectiveMaxH1}%) — rawan distribusi puncak.`
       : m5FallingKnife
-      ? `Tren sedang jatuh/sekarat (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%) — jangan beli pisau jatuh.`
+      ? `Anti-Freefall: Tren sedang melemah/merah (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%) — dilarang beli pisau jatuh.`
       : isViralVelocity && pH1 > effectiveMaxH1
       ? `Ledakan viral aktif (Vol5m $${Math.round(volM5).toLocaleString()}, 5m terkendali ${pM5.toFixed(1)}%).`
-      : 'Laju kenaikan terkendali (belum pucuk vertikal dan tidak sedang jatuh).',
+      : 'Laju kenaikan hijau terkendali (belum pucuk vertikal dan tidak sedang jatuh).',
   });
-  if (m5FallingKnife) vetoReasons.push(`Tren sedang jatuh (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%)`);
+  if (m5FallingKnife) vetoReasons.push(`Anti-Freefall: harga melemah (5m ${pM5.toFixed(1)}%, 1h ${pH1.toFixed(1)}%)`);
   if (m5TooHot) waitReasons.push(`Overextended 5m (+${pM5.toFixed(1)}% > +${effectiveMaxM5}%) — tunggu pullback`);
   if (h1TooExtended) waitReasons.push(`Parabolik 1h (+${pH1.toFixed(1)}% > +${effectiveMaxH1}%) — rawan puncak`);
 
@@ -243,16 +250,19 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     vetoReasons.push(`Likuiditas tipis ($${Math.round(liqUsd).toLocaleString()}, ${liqMcRatioPct.toFixed(1)}% MC)`);
   }
 
-  // 5. v4 Viral Demand Velocity, Pullback Contraction Exemption, Anti-Wash-Bot & Akumulasi 6h
+  // 5. v5 Viral Demand Velocity, Net Buyer Dominance (>=52%), Paid-Boost Guard & Extreme Wash-Churn Guard
   const minTicketM5 = corridor?.minAvgTicketM5Usd ?? 22.0;
   const isMicroBotnetH1 = totalTxH1 >= 250 && avgTicketH1Usd < 20.0;
   const isMicroTicketM5 = totalTxM5 >= 12 && avgTicketM5Usd < minTicketM5;
-  const isWhaleSiphonM5 = buysM5 >= 12 && buyRatio5mPctEarly >= 62 && pM5 < -1.0;
-  const isH6SellBleed = ageMinutes >= 360 && totalTxH6 >= 20 && buyRatio6hPctEarly < 47.0;
+  const isWhaleSiphonM5 = buysM5 >= 12 && buyRatio5mPctEarly >= 62 && pM5 < -0.5;
+  const isH6SellBleed = ageMinutes >= 360 && totalTxH6 >= 20 && buyRatio6hPctEarly < 49.0;
   const isVolDying = ageMinutes >= 25 && volH1 > 0 && volAccelRatio < 0.55 && !isPullbackContractionOk;
   const isSidewaysChurnH1 = !isDailyCoin && turnoverH1Ratio >= 1.8 && pH1 < 8.0;
-  const whaleAbsorption = pM5 >= 2.0 && buyRatio5mPctEarly >= 42.0 && buyRatio1hPctEarly >= 48.0;
-  const buyerPressureOk = whaleAbsorption || (buyRatio5mPctEarly >= 48.0 && buyRatio1hPctEarly >= 49.0);
+  const isExtremeWashChurn = !isDailyCoin && turnoverH1Ratio >= 8.0 && (pH1 < 60.0 || pM5 < 1.0);
+  const whaleAbsorption =
+    pM5 >= 3.0 && volM5 >= 15_000 && buyRatio5mPctEarly >= 44.0 && buyRatio5mPctEarly < 52.0 && buyRatio1hPctEarly >= 51.0;
+  const buyerPressureOk = whaleAbsorption || (buyRatio5mPctEarly >= 52.0 && buyRatio1hPctEarly >= 52.0);
+  const paidBoostTrap = isBoosted && !(volM5 >= 25_000 && buyRatio5mPctEarly >= 55.0 && pM5 >= 2.0);
   const isAgedCoin = ageMinutes >= 720;
   const isSteadyOrganicClimber =
     !isAgedCoin &&
@@ -262,7 +272,7 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     volH1 >= 45_000 &&
     turnoverH1Ratio >= 0.7 &&
     buyRatio1hPctEarly >= 54.0 &&
-    buyRatio5mPctEarly >= 50.0 &&
+    buyRatio5mPctEarly >= 52.0 &&
     avgTicketM5Usd >= 28.0 &&
     totalTxH1 >= 300;
   const reqVolM5 = isAgedCoin ? 2_000 : isSteadyOrganicClimber ? 4_500 : 8_000;
@@ -286,23 +296,29 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     !isH6SellBleed &&
     !isVolDying &&
     !isSidewaysChurnH1 &&
+    !isExtremeWashChurn &&
+    !paidBoostTrap &&
     hasMinActivity &&
     tx24hOk;
 
   checks.push({
     id: 'organic_orderflow',
     layer: 'ORDERFLOW',
-    label: 'Arus Modal Viral, Kontraksi Pullback & Akumulasi 6h',
+    label: 'Demand Organik, Anti-Paid-Boost & Dominasi Buyer (>=52%)',
     passed: flowOk,
     severity: 'HARD_VETO',
-    actual: `Vol5m $${Math.round(volM5).toLocaleString()} (${volAccelRatio.toFixed(2)}x · $${avgTicketM5Usd.toFixed(0)}/tx) · Turn1h ${turnoverH1Ratio.toFixed(2)}x`,
-    threshold: `Vol5m >= $${reqVolM5.toLocaleString()} · Vol1h >= $${reqVolH1.toLocaleString()} · Turn >= ${reqTurnH1.toFixed(2)}x`,
-    detail: isMicroBotnetH1
+    actual: `Vol5m $${Math.round(volM5).toLocaleString()} (${volAccelRatio.toFixed(2)}x · Buy ${buyRatio5mPctEarly.toFixed(0)}%) · ${isBoosted ? 'PAID BOOST' : 'Organik'}`,
+    threshold: `Vol5m >= $${reqVolM5.toLocaleString()} · Buy >= 52% · Non-Boosted · Turn >= ${reqTurnH1.toFixed(2)}x`,
+    detail: paidBoostTrap
+      ? 'Jebakan Paid Boost Exit-Liquidity: token membayar boost DexScreener tanpa demand organik masif — rawan dump bebas.'
+      : isExtremeWashChurn
+      ? `Extreme Wash-Bot Churn: turnover 1h ${turnoverH1Ratio.toFixed(1)}x MC tapi harga flat (1h ${pH1.toFixed(1)}%, 5m ${pM5.toFixed(1)}%).`
+      : isMicroBotnetH1
       ? `Botnet spam H1 terdeteksi (${totalTxH1} tx dengan tiket rata-rata receh $${avgTicketH1Usd.toFixed(1)}).`
       : isWhaleSiphonM5
       ? `Divergensi Whale Siphon: klik beli ramai (${buysM5}B/${sellsM5}S) tapi harga turun (${pM5.toFixed(1)}%).`
       : isH6SellBleed
-      ? `Distribusi multi-jam terdeteksi (6h buy hanya ${buyRatio6hPctEarly.toFixed(0)}%) — rawan konsolidasi turun / dead-cat bounce.`
+      ? `Distribusi multi-jam terdeteksi (6h buy hanya ${buyRatio6hPctEarly.toFixed(0)}% < 49%) — rawan dead-cat bounce lalu turun bebas.`
       : isVolDying
       ? `Volume 5m sekarat ($${Math.round(volM5).toLocaleString()}, accel ${volAccelRatio.toFixed(2)}x) — bensin momentum habis.`
       : isSidewaysChurnH1
@@ -312,24 +328,26 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
       : !volVelocityOk
       ? `Arus modal terlalu lemah (Vol5m $${Math.round(volM5).toLocaleString()}, Vol1h $${Math.round(volH1).toLocaleString()}, Turn1h ${turnoverH1Ratio.toFixed(2)}x) — rawan mati.`
       : !buyerPressureOk
-      ? `Tekanan jual mendominasi (5m ${buyRatio5mPctEarly.toFixed(0)}% buy, 1h ${buyRatio1hPctEarly.toFixed(0)}% buy).`
+      ? `Buyer belum dominan (5m ${buyRatio5mPctEarly.toFixed(0)}%, 1h ${buyRatio1hPctEarly.toFixed(0)}% < 52%).`
       : !tx24hOk
       ? `Riwayat transaksi pair masih di bawah ambang (${totalTx24h} < ${effectiveMinTx24h}).`
       : isPullbackContractionOk && volAccelRatio < 0.55
       ? `Kontraksi volume pullback sehat: Vol5m tetap tebal $${Math.round(volM5).toLocaleString()}.`
       : whaleAbsorption
       ? 'Demand viral kuat + Whale Absorption terdeteksi (harga naik meski retail TP).'
-      : 'Kecepatan arus modal viral/organik aktif tanpa wash-bot.',
+      : 'Kecepatan arus modal 100% organik aktif dengan dominasi buyer >= 52%.',
   });
 
+  if (paidBoostTrap) vetoReasons.push('Jebakan Paid Boost DexScreener (rawan exit liquidity dump)');
+  if (isExtremeWashChurn) vetoReasons.push(`Extreme Wash-Bot Churn (Turn1h ${turnoverH1Ratio.toFixed(1)}x tapi harga flat)`);
   if (isMicroBotnetH1) vetoReasons.push(`Botnet micro-ticket H1 ($${avgTicketH1Usd.toFixed(1)}/tx)`);
   if (isWhaleSiphonM5) vetoReasons.push('Whale Siphon: klik beli tinggi tapi harga minus');
-  if (isH6SellBleed) vetoReasons.push(`Distribusi 6h (${buyRatio6hPctEarly.toFixed(0)}% buy) — konsolidasi turun`);
+  if (isH6SellBleed) vetoReasons.push(`Distribusi 6h (${buyRatio6hPctEarly.toFixed(0)}% buy < 49%) — konsolidasi turun`);
   if (isVolDying) vetoReasons.push(`Volume 5m sekarat ($${Math.round(volM5).toLocaleString()}, accel ${volAccelRatio.toFixed(2)}x < 0.55x)`);
   if (isSidewaysChurnH1) vetoReasons.push('Wash-trading / distribusi sideways H1');
   if (isMicroTicketM5) vetoReasons.push(`Wash-bot 5m ($${avgTicketM5Usd.toFixed(1)}/tx < $${minTicketM5})`);
   if (!volVelocityOk) vetoReasons.push(`Arus modal lesu (Vol5m $${Math.round(volM5).toLocaleString()}, Vol1h $${Math.round(volH1).toLocaleString()})`);
-  if (!buyerPressureOk) vetoReasons.push(`Tekanan jual mendominasi (Buy5m ${buyRatio5mPctEarly.toFixed(0)}%)`);
+  if (!buyerPressureOk) vetoReasons.push(`Buyer belum dominan (5m ${buyRatio5mPctEarly.toFixed(0)}%, 1h ${buyRatio1hPctEarly.toFixed(0)}% < 52%)`);
   if (!tx24hOk) vetoReasons.push(`Transaksi pair kurang (${totalTx24h} < ${effectiveMinTx24h})`);
 
   // 6. Pre-ATH Extension Guard (Khusus koin berusia >= 6 jam: jangan kejar yang sudah terbang dekat ATH lokal)
@@ -419,6 +437,8 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
       isCorridorDViralBase,
       isHyperViralFastTrack,
       isSteadyOrganicClimber,
+      isBoosted,
+      hasCommunityPresence,
     },
   };
 }

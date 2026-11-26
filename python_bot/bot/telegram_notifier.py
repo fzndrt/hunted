@@ -41,7 +41,7 @@ def format_entry_alert(audit: AuditResult) -> str:
     elif at.is_steady_organic_climber:
         title_line = f"📈 <b>STEADY ORGANIC CLIMBER — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     else:
-        title_line = f"🟢 <b>ENTRY READY (v4.1 OHLCV OK) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>ENTRY READY (v5.0 ANTI-FREEFALL) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
 
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         chart_line = (
@@ -50,27 +50,33 @@ def format_entry_alert(audit: AuditResult) -> str:
         )
     elif st is not None and st.ohlcv_verified:
         chart_line = (
-            f"• Chart 5m ({_esc(st.regime)}): HL <b>{'Utuh' if st.higher_low_intact else 'Datar'}</b> · "
-            f"DD Peak <code>-{st.drawdown_from_peak_pct:.1f}%</code> · Wick <code>{st.upper_wick_pct:.0f}%</code> · GreenVol <b>{st.green_vol_share_pct:.0f}%</b>"
+            f"• Chart 5m ({_esc(st.regime)}): VWAP <b>{st.vwap_deviation_pct:+.1f}%</b> · "
+            f"DD Peak <code>-{st.drawdown_from_peak_pct:.1f}%</code> · Wick <code>{st.upper_wick_pct:.0f}%</code> · GreenVol4 <b>{st.green_vol_last4_pct:.0f}%</b>"
         )
     else:
         chart_line = f"• Orderflow: 5m Accel <b>{at.vol_m5_accel_ratio:.2f}x</b> · 6h Buy <b>{at.buy_ratio_6h_pct:.0f}%</b>"
 
     boost_label = "Tanpa Paid Boost (Organik)" if not p.is_boosted else "Ada Paid Boost"
     pool_label = f"{total_pools} pool aktif (Smart LP)" if total_pools >= 2 else "1 pool utama"
+    comm_parts = []
+    if p.has_socials:
+        comm_parts.append(f"Socials({p.social_count})")
+    if p.has_website:
+        comm_parts.append("Web")
+    comm_label = " + ".join(comm_parts) if comm_parts else "Anonim"
 
     lines = [
         title_line,
         f"Nama: {_esc(p.name)} | DEX: <code>{_esc(p.dex_id)}</code> | Quote: <b>{_esc(sec.hard_quote_symbol)}</b> | Usia: <b>{age_label}</b>",
         f"Mint: <code>{_esc(p.mint)}</code>",
         "",
-        "<b>🔥 5 Bukti Bahan Bakar Kenaikan:</b>",
-        f"1. Adopsi Holder: <b>{sec.total_holders:,} dompet</b> (<b>{sec.holders_per_min:.1f} holder/menit</b>)",
+        "<b>🔥 5 Bukti Bahan Bakar Kenaikan (v5 Winner-DNA):</b>",
+        f"1. Densitas Holder: <b>{sec.total_holders:,} dompet</b> (<b>${sec.mc_per_holder_usd:,.0f}/holder</b> · {sec.holders_per_min:.1f}/m)",
         f"2. Arus Modal: Vol5m <b>${p.vol_m5:,.0f}</b> (${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> (<b>{at.turnover_h1_ratio:.2f}x</b> MC)"
         + (" · 🐋 <b>Whale Absorption</b>" if at.whale_absorption else ""),
-        f"3. Struktur Chart: {chart_line[2:]}",
+        f"3. Anti-Freefall Chart: {chart_line[2:]}",
         f"4. Likuiditas & Smart LP: <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.0f}% MC) · <b>{pool_label}</b>",
-        f"5. Organik & Supply: <b>{boost_label}</b> · Dev <code>{sec.dev_pct}%</code> · Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code>",
+        f"5. Komunitas & Supply: <b>{comm_label}</b> · <b>{boost_label}</b> · Dev <code>{sec.dev_pct}%</code> · Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code>",
         "",
         f"• Spot MC: <b>${at.spot_mc:,.0f}</b> → Proyeksi (+delay): <b>${at.projected_entry_mc:,.0f}</b>",
         f"• Koridor: {_esc(at.corridor_label)} (Headroom <b>+{at.net_headroom_pct:.1f}%</b>)",
@@ -203,12 +209,12 @@ async def handle_telegram_command(
             client,
             "\n".join(
                 [
-                    "<b>Corridor Desk v4.1 — Viral Absorption, Watchlist Rescan &amp; Daily Consolidation</b>",
+                    "<b>Corridor Desk v5.0 — Anti-Freefall VWAP, Winner-DNA &amp; 100% Organic Radar</b>",
                     f"Runtime: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS Worker'}</code> | Storage: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     "",
                     "<b>Daftar Perintah:</b>",
-                    "• <code>/scan</code> — Pindai 9 feed organik + Watchlist Auto-Rescan (Intraday + Harian)",
-                    "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 5 layer + OHLCV sebelum entry manual",
+                    "• <code>/scan</code> — Pindai 10 feed 100% organik + Watchlist Rescan (Anti-Boost &amp; Anti-Freefall)",
+                    "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 5 layer + VWAP OHLCV sebelum entry manual",
                     "• <code>/track &lt;MINT&gt; &lt;ENTRY_MC&gt; &lt;MODAL_USD&gt;</code> — Masukkan ke Exit Guard",
                     "• <code>/positions</code> — Lihat PnL &amp; AMM LP Retention posisi aktif",
                     "• <code>/close &lt;MINT&gt;</code> — Hapus posisi dari Exit Guard",
@@ -226,13 +232,13 @@ async def handle_telegram_command(
             client,
             "\n".join(
                 [
-                    "<b>Status Bot Corridor Desk v4.1</b>",
+                    "<b>Status Bot Corridor Desk v5.0 (Anti-Freefall)</b>",
                     f"• Lingkungan: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS'}</code>",
                     f"• Penyimpanan: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     f"• Posisi Aktif Exit Guard: <b>{len(positions)}</b> | Watchlist Auto-Rescan: <b>{len(wl_mints)}</b>",
                     f"• Ambang Skor Minimal: <b>{cfg.min_score}/100</b> | Delay: <b>{cfg.reaction_delay_sec}s</b>",
                     f"• Intraday Min Vol: <b>${cfg.min_vol_m5_usd:,.0f}/5m</b> (Steady Climber $4.5K) · <b>${cfg.min_vol_h1_usd:,.0f}/1h</b>",
-                    f"• Koridor C &amp; D Viral Base ($210K–$850K): <b>{'Aktif' if cfg.include_midcap_corridor else 'Nonaktif'}</b>",
+                    f"• Filter v5: <b>VWAP 5m Guard · MC/Holder &lt;=$320 · Buy&gt;=52% · Anti-Paid-Boost</b>",
                 ]
             ),
             chat_id,
@@ -240,7 +246,7 @@ async def handle_telegram_command(
         return
 
     if cmd == "/scan":
-        await tg.send_message(client, "Memindai 9 feed Solana + Watchlist Auto-Rescan...", chat_id)
+        await tg.send_message(client, "Memindai 10 feed 100% organik + Watchlist Auto-Rescan (v5.0)...", chat_id)
         wl_mints = await store.list_watchlist_mints(limit=15)  # type: ignore[attr-defined]
         results, _ = await run_scan_cycle(client, cfg, watchlist_mints=wl_mints)
         ready = [r for r in results if r.verdict == "ENTRY_READY"]
@@ -255,7 +261,7 @@ async def handle_telegram_command(
                 extra = f"\nKandidat Watch teratas: <b>${_esc(top_w.pair.symbol)}</b> ({top_w.total_score}/100) — {_esc(top_w.headline)}"
             await tg.send_message(
                 client,
-                f"Scan v4.1 selesai ({len(results)} diaudit | {len(watch)} Watch Pullback | {len(wl_mints)} Watchlist). Belum ada token yang lolos semua layer.{extra}",
+                f"Scan v5.0 selesai ({len(results)} diaudit | {len(watch)} Watch Pullback | {len(wl_mints)} Watchlist). Belum ada token yang lolos semua layer.{extra}",
                 chat_id,
             )
         else:

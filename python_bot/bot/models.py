@@ -74,6 +74,10 @@ class PairSnapshot:
     sells_h6: int = 0
     pool_count: int = 1
     is_boosted: bool = False
+    has_socials: bool = False
+    social_count: int = 0
+    has_website: bool = False
+    has_image: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,7 @@ class SecurityResult:
     holders_per_min: float = 0.0
     active_markets_count: int = 1
     clean_viral_pareto: bool = False
+    mc_per_holder_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,7 @@ class AntiTopResult:
     is_corridor_d_viral_base: bool = False
     is_hyper_viral_fasttrack: bool = False
     is_steady_organic_climber: bool = False
+    has_community_presence: bool = False
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,8 @@ class StructureResult:
     range_position_pct: float = 50.0
     green_vol_share_pct: float = 50.0
     higher_low_intact: bool = True
+    vwap_deviation_pct: float = 0.0
+    green_vol_last4_pct: float = 50.0
     summary: str = "Struktur chart terverifikasi."
 
 

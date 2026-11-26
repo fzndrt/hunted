@@ -286,53 +286,113 @@ def evaluate_security(
         age_min = 60.0
     holders_per_min = round(total_holders / age_min, 2) if total_holders > 0 else 0.0
 
-    # 8. Minimum Organic Holder Depth (v4.1: Fast-Track Hyper-Viral 12–19m wajib >= 750 holders & 0 risk!)
+    # 8. Minimum Organic Holder Depth & Holder Density Ratio (v5: Anti-Hollow-Shell MC/Holder!)
     if pair.market_cap >= 390_000.0:
-        min_holders_req = 1_500
+        min_holders_req = 1_800
+        max_mc_per_holder = 280.0
+    elif pair.market_cap >= 210_000.0:
+        min_holders_req = 600
+        max_mc_per_holder = 280.0
     elif require_hyper_viral_holders:
         min_holders_req = 750
+        max_mc_per_holder = 300.0
     elif require_steady_climber_holders:
-        min_holders_req = 400
-    elif pair.market_cap >= 100_000.0:
-        min_holders_req = 280
+        min_holders_req = 450
+        max_mc_per_holder = 300.0
+    elif pair.market_cap >= 92_000.0:
+        min_holders_req = 350
+        max_mc_per_holder = 320.0
     else:
-        min_holders_req = 220
+        min_holders_req = 250
+        max_mc_per_holder = 320.0
+
+    mc_per_holder_usd = (
+        round(pair.market_cap / total_holders, 1)
+        if total_holders > 0 and pair.market_cap > 0
+        else 0.0
+    )
+    holder_density_ok = (total_holders == 0) or (mc_per_holder_usd <= max_mc_per_holder)
 
     warn_or_danger_risks_early = sum(
         1
         for r in risks
         if str(r.get("level", "")).lower() in {"danger", "error", "critical", "warn"}
     )
+    # v5: Deteksi risiko kritis RugCheck seperti High Holder Correlation (bundled swarm ATX), Copycat, atau skor buruk
+    toxic_risk_names: list[str] = []
+    for r in risks:
+        r_name = str(r.get("name", "")).lower()
+        r_level = str(r.get("level", "")).lower()
+        if r_level in {"danger", "error", "critical", "warn"} and any(
+            kw in r_name
+            for kw in (
+                "high holder correlation",
+                "high market cap per holder",
+                "copycat",
+                "single holder ownership",
+                "low liquidity",
+            )
+        ):
+            toxic_risk_names.append(str(r.get("name", "risk")))
+    bad_rc_score = rc_score is not None and rc_score > 35
+    rugcheck_integrity_ok = (len(toxic_risk_names) == 0) and (not bad_rc_score)
+
+    checks.append(
+        GateCheck(
+            id="rugcheck_integrity",
+            layer="SECURITY",
+            label="Integritas Risiko RugCheck (Anti-Bundler & Korelasi)",
+            passed=rugcheck_integrity_ok,
+            severity="PASS" if rugcheck_integrity_ok else "VETO",
+            actual=(
+                f"Score {rc_score if rc_score is not None else 'N/A'} · Bersih"
+                if rugcheck_integrity_ok
+                else f"Score {rc_score} · {', '.join(sorted(set(toxic_risk_names)))[:55] or 'Skor tinggi'}"
+            ),
+            threshold="RC Score <= 35 & bebas High Holder Correlation / Copycat / Hollow MC",
+            detail=(
+                "Skor RugCheck sehat tanpa sinyal korelasi dompet bundler/cabal."
+                if rugcheck_integrity_ok
+                else f"DITOLAK: Risiko on-chain tinggi ({', '.join(sorted(set(toxic_risk_names))) or f'RC score {rc_score} > 35'})."
+            ),
+        )
+    )
+
     fasttrack_clean_ok = (not require_hyper_viral_holders) or (
         total_holders >= 750 and warn_or_danger_risks_early == 0 and dev_pct <= 0.05
     )
-    holders_ok = ((total_holders == 0) and not require_hyper_viral_holders) or (
-        total_holders >= min_holders_req and fasttrack_clean_ok
+    holders_ok = (
+        ((total_holders == 0) and not require_hyper_viral_holders)
+        or (total_holders >= min_holders_req and fasttrack_clean_ok and holder_density_ok)
     )
     checks.append(
         GateCheck(
             id="organic_holders",
             layer="SECURITY",
-            label="Basis Holder Organik & Kecepatan Adopsi",
+            label="Basis Holder Organik & Densitas MC/Holder (Anti-Hollow-Shell)",
             passed=holders_ok,
             severity="PASS" if holders_ok else "VETO",
             actual=(
-                f"{total_holders:,} holders ({holders_per_min:.1f}/m)"
+                f"{total_holders:,}H ({holders_per_min:.1f}/m · ${mc_per_holder_usd:,.0f}/H)"
                 if total_holders > 0
                 else "N/A"
             ),
             threshold=(
-                f">= {min_holders_req:,} holders & 0 risks (Hyper-Viral Fast-Track)"
+                f">= {min_holders_req:,}H, <= ${max_mc_per_holder:.0f}/H & 0 risks (Fast-Track)"
                 if require_hyper_viral_holders
-                else f">= {min_holders_req:,} holders"
+                else f">= {min_holders_req:,}H & <= ${max_mc_per_holder:.0f} MC/holder"
             ),
             detail=(
-                f"Basis komunitas holder solid ({total_holders:,} dompet, {holders_per_min:.1f} holder/menit)."
+                f"Basis komunitas holder padat ({total_holders:,} dompet, ${mc_per_holder_usd:,.0f}/holder, {holders_per_min:.1f}/m)."
                 if holders_ok
                 else (
-                    f"DITOLAK (Fast-Track < 20m): Wajib >= 750 holders & 0 risks (aktual {total_holders:,}H, {warn_or_danger_risks_early} risk)."
+                    f"DITOLAK (Fast-Track < 20m): Wajib >= 750H, <= $300/H & 0 risks (aktual {total_holders:,}H, ${mc_per_holder_usd:,.0f}/H, {warn_or_danger_risks_early} risk)."
                     if require_hyper_viral_holders
-                    else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req:,}) — rawan sepi & langsung mati."
+                    else (
+                        f"DITOLAK (Hollow Shell / Gelembung Cabal): MC/Holder terlalu mahal (${mc_per_holder_usd:,.0f}/holder > ${max_mc_per_holder:.0f}) — rawan terjun bebas saat cabal jual."
+                        if total_holders >= min_holders_req and not holder_density_ok
+                        else f"DITOLAK: Holder terlalu sedikit ({total_holders:,} < {min_holders_req:,}) — rawan sepi & langsung mati."
+                    )
                 )
             ),
         )
@@ -350,14 +410,15 @@ def evaluate_security(
         if str(r.get("level", "")).lower() in {"danger", "error", "critical", "warn"}
     )
 
-    # Deteksi Nano-Swarm buatan: 5 wallet teratas hampir seragam persis (spread < 0.35%) dengan total > 9%
+    # Deteksi Nano-Swarm buatan:
+    # (a) 5 wallet teratas hampir seragam persis (spread < 0.35%) dengan total >= 9%
+    # (b) Fragmentasi ekstrem botnet (seperti ATX: ribuan dompet 0.04%, Top10 < 3.5% pada >= 500 holders!)
     is_nano_swarm = (
-        len(top5) >= 5
-        and (top5[0] - top5[4]) < 0.35
-        and sum(top5) >= 9.0
+        (len(top5) >= 5 and (top5[0] - top5[4]) < 0.35 and sum(top5) >= 9.0)
+        or (len(non_protocol_holders) >= 5 and total_holders >= 500 and top10_pct < 3.5)
     )
 
-    # Smart Viral Pareto (v4):
+    # Smart Viral Pareto (v4/v5):
     # - Ultra-Clean Viral Runner (seperti $Zero: RC score<=5, 0 risk, 0 insider, Dev 0%, Top10<=28%, >=1.000 holder): Top1 <= 11.0%
     # - Proven Community (>=2.000 holder, 0 insider, RC score<=15): Top1 <= 8.0%
     # - Default token kecil/baru: ketat <= 6.5%
@@ -386,7 +447,7 @@ def evaluate_security(
     if is_nano_swarm:
         pareto_status = "NANO_SWARM_DETECTED"
         pareto_detail = (
-            f"DITOLAK: Pola Nano-Swarm/Cabal terdeteksi — Top 5 holder nyaris seragam ({top5[0]:.2f}%..{top5[4]:.2f}%)."
+            f"DITOLAK: Pola Nano-Swarm/Botnet terdeteksi (Top1={top1_pct:.2f}%, Top10={top10_pct:.2f}% — distribusi artifisial/seragam)."
         )
     elif insider_count >= 3:
         pareto_status = "INSIDER_CLUSTER"
@@ -413,7 +474,7 @@ def evaluate_security(
             passed=pareto_ok,
             severity="PASS" if pareto_ok else "VETO",
             actual=f"Top1 {top1_pct:.2f}% · Top10 {top10_pct:.2f}%",
-            threshold=f"Top1 <= {max_top1_allowed:.1f}%, Top10 <= 30.0%, non-seragam",
+            threshold=f"Top1 <= {max_top1_allowed:.1f}%, Top10 3.5%–30.0%, non-seragam",
             detail=pareto_detail,
         )
     )
@@ -435,4 +496,5 @@ def evaluate_security(
         holders_per_min=holders_per_min,
         active_markets_count=active_markets_count,
         clean_viral_pareto=clean_viral_pareto,
+        mc_per_holder_usd=mc_per_holder_usd,
     )

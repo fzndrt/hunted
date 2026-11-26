@@ -177,34 +177,43 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   const cfg: ScanConfig = { ...DEFAULT_SCAN_CONFIG, ...(partialCfg ?? {}) };
   const feedNotes: string[] = [];
 
-  // 1. Staggered GeckoTerminal 5m (p1+p2)/1h/6h (anti-429) + Parallel Organic DexScreener Feeds (9 Feeds)
+  // 1. Staggered GeckoTerminal 5m (p1+p2)/1h (p1+p2)/6h + Parallel Organic DexScreener Feeds (10 Feeds, ZERO Paid-Boost Spam!)
   const fetchGeckoStaggered = async () => {
     const gt5m = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1',
       4000
     );
-    await new Promise((r) => setTimeout(r, 550));
+    await new Promise((r) => setTimeout(r, 450));
     const gt5mP2 = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2',
       4000
     );
-    await new Promise((r) => setTimeout(r, 550));
+    await new Promise((r) => setTimeout(r, 450));
     const gt1h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1',
       4000
     );
-    await new Promise((r) => setTimeout(r, 550));
+    await new Promise((r) => setTimeout(r, 450));
+    const gt1hP2 = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
+      'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=2',
+      4000
+    );
+    await new Promise((r) => setTimeout(r, 450));
     const gt6h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
       4000
     );
-    return [gt5m, gt5mP2, gt1h, gt6h] as const;
+    return [gt5m, gt5mP2, gt1h, gt1hP2, gt6h] as const;
   };
 
-  const [[gt5m, gt5mP2, gt1h, gt6h], dsPump, dsRay, dsCto, dsProfiles, dsBoostsTop] = await Promise.all([
+  const [[gt5m, gt5mP2, gt1h, gt1hP2, gt6h], dsPump, dsMet, dsRay, dsCto, dsProfiles] = await Promise.all([
     fetchGeckoStaggered(),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
       'https://api.dexscreener.com/latest/dex/search?q=pumpswap',
+      4000
+    ),
+    fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
+      'https://api.dexscreener.com/latest/dex/search?q=meteora',
       4000
     ),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
@@ -217,10 +226,6 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
     ),
     fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
       'https://api.dexscreener.com/token-profiles/latest/v1',
-      4000
-    ),
-    fetchJsonWithTimeout<Array<{ chainId?: string; tokenAddress?: string }>>(
-      'https://api.dexscreener.com/token-boosts/top/v1',
       4000
     ),
   ]);
@@ -255,10 +260,12 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   extractGtMints(gt5m, 'GeckoTerminal 5m Trending');
   extractGtMints(gt5mP2, 'GeckoTerminal 5m Page 2');
   extractGtMints(gt1h, 'GeckoTerminal 1h Revival');
+  extractGtMints(gt1hP2, 'GeckoTerminal 1h Page 2');
   extractGtMints(gt6h, 'GeckoTerminal 6h Daily Consolidation');
 
   for (const [searchPayload, label] of [
     [dsPump, 'DexScreener PumpSwap'],
+    [dsMet, 'DexScreener Meteora'],
     [dsRay, 'DexScreener Raydium'],
   ] as const) {
     if (!Array.isArray(searchPayload?.pairs)) continue;
@@ -277,7 +284,6 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   for (const [arr, label, weight] of [
     [dsCto, 'DexScreener CTO', 2],
     [dsProfiles, 'DexScreener Token Profiles', 2],
-    [dsBoostsTop, 'DexScreener Top Boosts', 1],
   ] as const) {
     if (!Array.isArray(arr)) continue;
     let added = 0;

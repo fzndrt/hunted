@@ -63,8 +63,10 @@ ORGANIC_FEED_SOURCES: frozenset[str] = frozenset(
         "gecko_trending_5m",
         "gecko_trending_5m_p2",
         "gecko_trending_1h",
+        "gecko_trending_1h_p2",
         "gecko_trending_6h",
         "dex_pumpswap",
+        "dex_meteora",
         "dex_raydium",
         "dex_community_takeovers",
         "dex_token_profiles",
@@ -173,7 +175,7 @@ class BotConfig:
     alert_cooldown_min: int = 30
 
     reaction_delay_sec: int = 22
-    min_score: int = 76
+    min_score: int = 80
     max_round_trip_loss_pct: float = 4.5
     max_depth_cliff_loss_pct: float = 13.5
     min_net_headroom_pct: float = 18.0
@@ -231,7 +233,7 @@ class BotConfig:
             exit_check_interval_sec=_env_int("EXIT_CHECK_INTERVAL_SEC", 20, 10, 300),
             alert_cooldown_min=_env_int("ALERT_COOLDOWN_MIN", 30, 5, 1440),
             reaction_delay_sec=_env_int("REACTION_DELAY_SEC", 22, 5, 90),
-            min_score=_env_int("MIN_SCORE", 76, 40, 95),
+            min_score=_env_int("MIN_SCORE", 80, 40, 95),
             max_round_trip_loss_pct=_env_float("MAX_ROUND_TRIP_LOSS_PCT", 4.5, 1.5, 12.0),
             max_depth_cliff_loss_pct=_env_float("MAX_DEPTH_CLIFF_LOSS_PCT", 13.5, 4.0, 25.0),
             min_net_headroom_pct=_env_float("MIN_NET_HEADROOM_PCT", 18.0, 8.0, 60.0),

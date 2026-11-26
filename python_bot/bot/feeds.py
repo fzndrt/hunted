@@ -55,6 +55,13 @@ def parse_dexscreener_pair(
     mc = _safe_float(raw.get("marketCap")) or _safe_float(raw.get("fdv"))
     boosts = raw.get("boosts") or {}
     active_boosts = _safe_int(boosts.get("active")) if isinstance(boosts, dict) else 0
+    info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+    socials = info.get("socials") if isinstance(info.get("socials"), list) else []
+    websites = info.get("websites") if isinstance(info.get("websites"), list) else []
+    social_count = len(socials)
+    has_socials = social_count > 0
+    has_website = len(websites) > 0
+    has_image = bool(info.get("imageUrl"))
     return PairSnapshot(
         mint=mint,
         pair_address=str(raw.get("pairAddress") or ""),
@@ -87,6 +94,10 @@ def parse_dexscreener_pair(
         sells_h6=_safe_int(h6_tx.get("sells")),
         pool_count=1,
         is_boosted=active_boosts > 0,
+        has_socials=has_socials,
+        social_count=social_count,
+        has_website=has_website,
+        has_image=has_image,
     )
 
 
@@ -102,7 +113,7 @@ def pick_best_solana_pair(
             candidates.append(snap)
     if not candidates:
         return None
-    # Hitung jumlah pool DEX aktif >= $2K likuiditas (sinyal Smart LP / multi-pool seperti $Zero)
+    # Hitung jumlah pool DEX aktif >= $2K likuiditas (sinyal Smart LP / multi-pool seperti mihao, STONK, $Zero)
     active_pool_count = max(
         1,
         sum(
@@ -112,6 +123,10 @@ def pick_best_solana_pair(
         ),
     )
     any_boosted = any(c.is_boosted for c in candidates)
+    any_socials = any(c.has_socials for c in candidates)
+    max_social_count = max(c.social_count for c in candidates)
+    any_website = any(c.has_website for c in candidates)
+    any_image = any(c.has_image for c in candidates)
     # Prioritaskan pair dengan hard-quote terverifikasi lalu likuiditas terbesar
     candidates.sort(
         key=lambda p: (
@@ -120,7 +135,15 @@ def pick_best_solana_pair(
         ),
         reverse=True,
     )
-    return replace(candidates[0], pool_count=active_pool_count, is_boosted=any_boosted)
+    return replace(
+        candidates[0],
+        pool_count=active_pool_count,
+        is_boosted=any_boosted,
+        has_socials=any_socials,
+        social_count=max_social_count,
+        has_website=any_website,
+        has_image=any_image,
+    )
 
 
 async def _get_json(client: httpx.AsyncClient, url: str) -> Any:
@@ -197,54 +220,59 @@ async def fetch_pairs_batch(
 
 async def _fetch_gecko_staggered(
     client: httpx.AsyncClient,
-) -> tuple[Any, Any, Any, Any]:
-    """Tarik GeckoTerminal 5m (hal 1 & 2), 1h & 6h berurutan (jeda 0.55s) agar anti-HTTP 429 & menangkap climber tier-2."""
+) -> tuple[Any, Any, Any, Any, Any]:
+    """Tarik GeckoTerminal 5m (p1 & p2), 1h (p1 & p2) & 6h berurutan (jeda 0.45s) untuk tangkap koin organik awal."""
     gt_5m = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1",
     )
-    await asyncio.sleep(0.55)
+    await asyncio.sleep(0.45)
     gt_5m_p2 = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2",
     )
-    await asyncio.sleep(0.55)
+    await asyncio.sleep(0.45)
     gt_1h = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1",
     )
-    await asyncio.sleep(0.55)
+    await asyncio.sleep(0.45)
+    gt_1h_p2 = await _get_json(
+        client,
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=2",
+    )
+    await asyncio.sleep(0.45)
     gt_6h = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1",
     )
-    return gt_5m, gt_5m_p2, gt_1h, gt_6h
+    return gt_5m, gt_5m_p2, gt_1h, gt_1h_p2, gt_6h
 
 
 async def discover_solana_candidates(
     client: httpx.AsyncClient,
-    max_candidates: int = 75,
+    max_candidates: int = 80,
     watchlist_mints: Optional[list[str]] = None,
 ) -> tuple[list[PairSnapshot], list[str]]:
     """
-    Kumpulkan kandidat organik dari 9 sumber utama + Watchlist Auto-Rescan (anti-429 & anti-paid-boost bias):
-      - Watchlist Auto-Rescan: koin yang sebelumnya lolos Layer 1 (WAIT_DIP) dipantau ulang hingga 2 jam
-      - Organik Intraday & Harian: GeckoTerminal 5m (hal 1 & 2), 1h, 6h (staggered), DexScreener PumpSwap, Raydium, CTO, Token Profiles
-      - Sekunder: DexScreener Top Boosts (tidak pernah mendominasi urutan di atas feed organik)
+    Kumpulkan kandidat 100% ORGANIK dari 10 sumber utama + Watchlist Auto-Rescan (v5: ZERO Paid-Boost Spam!):
+      - Watchlist Auto-Rescan: koin berkualitas yang sebelumnya WAIT_DIP dipantau ulang hingga 2 jam
+      - Organik Intraday & Harian: GeckoTerminal 5m (p1 & p2), 1h (p1 & p2), 6h
+      - Multi-Pool & Komunitas Awal: DexScreener PumpSwap, Meteora, Raydium, CTO, Token Profiles (non-boosted)
     """
     dex_urls = {
         "dex_pumpswap": "https://api.dexscreener.com/latest/dex/search?q=pumpswap",
+        "dex_meteora": "https://api.dexscreener.com/latest/dex/search?q=meteora",
         "dex_raydium": "https://api.dexscreener.com/latest/dex/search?q=raydium",
         "dex_community_takeovers": "https://api.dexscreener.com/community-takeovers/latest/v1",
         "dex_token_profiles": "https://api.dexscreener.com/token-profiles/latest/v1",
-        "dex_boosts_top": "https://api.dexscreener.com/token-boosts/top/v1",
     }
 
     dex_keys = list(dex_urls.keys())
     gecko_task = _fetch_gecko_staggered(client)
     dex_tasks = [_get_json(client, dex_urls[k]) for k in dex_keys]
     gathered = await asyncio.gather(gecko_task, *dex_tasks)
-    gt_5m, gt_5m_p2, gt_1h, gt_6h = gathered[0]
+    gt_5m, gt_5m_p2, gt_1h, gt_1h_p2, gt_6h = gathered[0]
     dex_responses = gathered[1:]
 
     sources_map: dict[str, set[str]] = {}
@@ -268,6 +296,7 @@ async def discover_solana_candidates(
         ("gecko_trending_5m", gt_5m),
         ("gecko_trending_5m_p2", gt_5m_p2),
         ("gecko_trending_1h", gt_1h),
+        ("gecko_trending_1h_p2", gt_1h_p2),
         ("gecko_trending_6h", gt_6h),
     ):
         before = sum(1 for s in sources_map.values() if key in s)
@@ -282,18 +311,18 @@ async def discover_solana_candidates(
 
     for key, payload in zip(dex_keys, dex_responses):
         before = sum(1 for s in sources_map.values() if key in s)
-        if key in {"dex_pumpswap", "dex_raydium"} and isinstance(payload, dict):
+        if key in {"dex_pumpswap", "dex_meteora", "dex_raydium"} and isinstance(payload, dict):
             for p in payload.get("pairs") or []:
                 if str(p.get("chainId") or "").lower() == "solana":
                     add_mint(str((p.get("baseToken") or {}).get("address") or ""), key)
-        elif key in {"dex_community_takeovers", "dex_token_profiles", "dex_boosts_top"} and isinstance(payload, list):
+        elif key in {"dex_community_takeovers", "dex_token_profiles"} and isinstance(payload, list):
             for item in payload[:25]:
                 if str(item.get("chainId") or "").lower() == "solana":
                     add_mint(str(item.get("tokenAddress") or ""), key)
         after = sum(1 for s in sources_map.values() if key in s)
         notes.append(f"{key}:{after - before}")
 
-    # Prioritaskan Watchlist Rescan + feed ORGANIK (Gecko 5m/1h/6h, PumpSwap, Raydium, CTO, Profiles) — bukan paid boosts!
+    # Prioritaskan Watchlist Rescan + multi-feed ORGANIK (Gecko 5m/1h/6h, PumpSwap, Meteora, Raydium, CTO, Profiles)
     def _mint_priority(m: str) -> tuple[int, int, int]:
         srcs = sources_map[m]
         wl_bonus = 1 if "watchlist_rescan" in srcs else 0
@@ -304,6 +333,7 @@ async def discover_solana_candidates(
                 "gecko_trending_5m" in srcs
                 or "gecko_trending_5m_p2" in srcs
                 or "gecko_trending_1h" in srcs
+                or "gecko_trending_1h_p2" in srcs
                 or "gecko_trending_6h" in srcs
             )
             else 0
@@ -319,6 +349,8 @@ async def discover_solana_candidates(
     pairs.sort(
         key=lambda p: (
             1 if "watchlist_rescan" in p.feed_sources else 0,
+            0 if p.is_boosted else 1,
+            1 if (p.has_socials or p.has_website) else 0,
             sum(1 for s in p.feed_sources if s in ORGANIC_FEED_SOURCES),
             p.vol_m5,
             p.vol_h1,

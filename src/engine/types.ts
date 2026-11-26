@@ -64,6 +64,7 @@ export interface SecurityAuditResult {
     rugScore: number | null;
     holdersPerMin?: number;
     cleanViralPareto?: boolean;
+    mcPerHolderUsd?: number;
   };
 }
 
@@ -106,6 +107,8 @@ export interface AntiTopResult {
     isCorridorDViralBase?: boolean;
     isHyperViralFastTrack?: boolean;
     isSteadyOrganicClimber?: boolean;
+    isBoosted?: boolean;
+    hasCommunityPresence?: boolean;
   };
 }
 

@@ -156,8 +156,9 @@ async def run_scan_cycle(
             return 999.0
         return max(0.1, (now_ms - p.pair_created_at_ms) / 60_000.0)
 
-    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, int, int, float, float]:
+    def _candidate_rank(p: PairSnapshot) -> tuple[int, int, int, int, int, float, float]:
         is_wl = 1 if "watchlist_rescan" in p.feed_sources else 0
+        non_boosted = 0 if p.is_boosted else 1
         organic_hits = sum(1 for src in p.feed_sources if src in ORGANIC_FEED_SOURCES)
         in_core_corridor = 22_000.0 <= p.market_cap <= 395_000.0 and p.liquidity_usd >= 10_000.0
         in_viral_base_d = (
@@ -174,13 +175,16 @@ async def run_scan_cycle(
         has_live_vol = 1 if (
             p.vol_m5 >= 4_500.0 or (age_m >= 720.0 and p.vol_m5 >= 1_800.0)
         ) else 0
+        community_bonus = 18_000.0 if (p.has_socials or p.has_website) else 0.0
         multi_pool_bonus = 20_000.0 if p.pool_count >= 2 else 0.0
+        green_bonus = 15_000.0 if p.price_change_m5 >= 0.5 else 0.0
         return (
             in_corridor,
+            non_boosted,
             is_wl,
             survived_sniper,
             has_live_vol,
-            organic_hits * 25_000.0 + multi_pool_bonus + p.vol_m5,
+            organic_hits * 25_000.0 + community_bonus + multi_pool_bonus + green_bonus + p.vol_m5,
             p.vol_h1,
         )
 

@@ -59,20 +59,22 @@ export function computeScoreAndVerdict(
     : clamp(((m.volAccelRatio - 0.8) / 2.2) * 6, 0, 6);
   const p2 = Math.round(clamp(bsPts + ticketPts + accelPts, 0, 25));
 
-  // Pillar 3: Holder & Supply Health (0–20)
+  // Pillar 3: Holder Density & Supply Health (0–20)
   let p3 = 0;
   if (security.source === 'RUGCHECK_LIVE') {
-    const devPts = sm.creatorBalancePct <= 0.1 ? 6 : sm.creatorBalancePct <= 1.0 ? 4 : 2;
+    const devPts = sm.creatorBalancePct <= 0.1 ? 5 : sm.creatorBalancePct <= 1.0 ? 3 : 1;
     const distPts =
-      sm.top10PurePct >= 5 && sm.top10PurePct <= 18
-        ? 8
-        : sm.top10PurePct <= 26
-        ? 5
+      sm.top10PurePct >= 5 && sm.top10PurePct <= 20
+        ? 6
+        : sm.top10PurePct <= 27
+        ? 4
         : sm.top10PurePct <= 30
         ? 2
         : 0;
-    const holderPts = clamp((sm.totalHolders / 500) * 6, 0, 6);
-    p3 = Math.round(clamp(devPts + distPts + holderPts, 0, 20));
+    const density = sm.mcPerHolderUsd ?? 0;
+    const densityPts = density > 0 && density <= 130 ? 5 : density > 0 && density <= 210 ? 3 : density > 0 && density <= 280 ? 1 : 0;
+    const holderPts = clamp((sm.totalHolders / 800) * 4, 0, 4);
+    p3 = Math.round(clamp(devPts + distPts + densityPts + holderPts, 0, 20));
   }
 
   // Pillar 4: Liquidity Depth & Execution (0–20)
@@ -86,19 +88,20 @@ export function computeScoreAndVerdict(
     p4 = Math.round(clamp((m.liqMcRatioPct / 25) * 5, 0, 5));
   }
 
-  // Pillar 5: Controlled Ignition / Pre-ATH Sleeper Revival (0–10)
+  // Pillar 5: Controlled Ignition, Community DNA & Organic No-Boost (0–10)
   let p5 = 0;
   if (m.isSleeperRevival) {
-    p5 = 10;
+    p5 = 7;
   } else if (m.pM5 >= 2.0 && m.pM5 <= 16.0) {
-    p5 = 10;
+    p5 = 7;
   } else if (m.pM5 > 16.0 && m.pM5 <= 24.0) {
-    p5 = 6;
-  } else if (m.pM5 >= 0 && m.pM5 < 2.0) {
     p5 = 5;
-  } else if (m.pM5 > -4.0 && m.pM5 < 0) {
-    p5 = 3;
+  } else if (m.pM5 >= 0 && m.pM5 < 2.0) {
+    p5 = 4;
   }
+  if (!m.isBoosted) p5 += 2;
+  if (m.hasCommunityPresence) p5 += 1;
+  p5 = Math.min(10, p5);
 
   const pillars: ScorePillar[] = [
     {

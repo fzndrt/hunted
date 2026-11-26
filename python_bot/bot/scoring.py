@@ -78,147 +78,159 @@ def score_and_finalize(
     cfg: BotConfig,
     structure: Optional[StructureResult] = None,
 ) -> AuditResult:
-    # Pilar 1: Keamanan, Distribusi & Kecepatan Adopsi Holder (25 poin)
+    # Pilar 1: Keamanan, Densitas Holder (MC/Holder) & Kecepatan Adopsi (25 poin)
     p1 = 0
     if security.passed:
-        p1 += 13
+        p1 += 10
         if (security.top10_pct or 100.0) <= 22.0:
-            p1 += 5
+            p1 += 4
         elif (security.top10_pct or 100.0) <= 28.0:
-            p1 += 3
+            p1 += 2
         if (security.dev_pct or 100.0) <= 1.0:
             p1 += 3
         elif (security.dev_pct or 100.0) <= 2.0:
             p1 += 2
-        if security.total_holders >= 1_500 or security.holders_per_min >= 10.0:
+        # Densitas Holder (Anti-Hollow-Shell): raksasa sejati (mihao $72/H, STONK $94/H, PAIR $65/H, duk $93/H)
+        if 0.0 < security.mc_per_holder_usd <= 130.0:
             p1 += 4
-        elif security.total_holders >= 400 or security.holders_per_min >= 4.0:
+        elif 0.0 < security.mc_per_holder_usd <= 210.0:
             p1 += 3
-        elif security.total_holders >= 220:
+        elif 0.0 < security.mc_per_holder_usd <= 280.0:
+            p1 += 1
+        if security.total_holders >= 1_000 or security.holders_per_min >= 8.0:
+            p1 += 4
+        elif security.total_holders >= 400 or security.holders_per_min >= 3.0:
+            p1 += 3
+        elif security.total_holders >= 250:
             p1 += 1
     else:
         p1 = sum(2 for c in security.checks if c.passed)
         p1 = min(p1, 10)
 
-    # Pilar 2: Posisi Entry (Corridor A–D) & Headroom (25 poin)
+    # Pilar 2: Posisi Entry (Corridor A–D) & Headroom (20 poin)
     p2 = 0
     if anti_top.corridor_id == "CORRIDOR_A_EARLY":
-        p2 += 14
-    elif anti_top.corridor_id == "CORRIDOR_B_POST100K":
-        p2 += 13
-    elif anti_top.corridor_id == "CORRIDOR_C_EXPANSION":
-        p2 += 12
-    elif anti_top.corridor_id == "CORRIDOR_D_VIRAL_BASE":
-        p2 += 12
-    if anti_top.net_headroom_pct >= 35.0:
         p2 += 11
+    elif anti_top.corridor_id == "CORRIDOR_B_POST100K":
+        p2 += 10
+    elif anti_top.corridor_id in {"CORRIDOR_C_EXPANSION", "CORRIDOR_D_VIRAL_BASE"}:
+        p2 += 9
+    if anti_top.net_headroom_pct >= 35.0:
+        p2 += 9
     elif anti_top.net_headroom_pct >= 25.0:
-        p2 += 8
+        p2 += 7
     elif anti_top.net_headroom_pct >= cfg.min_net_headroom_pct:
-        p2 += 6
+        p2 += 5
 
-    # Pilar 3: Viral Demand Velocity, Kontraksi Pullback & Whale Absorption (20 poin)
+    # Pilar 3: Momentum Hijau, Dominasi Buyer & Viral Demand Velocity (25 poin)
     p3 = 0
-    if 0.0 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
+    if 1.5 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
         p3 += 6
-    elif -3.5 <= anti_top.p_m5 < 0.0:
+    elif 0.0 <= anti_top.p_m5 < 1.5:
         p3 += 4
-    if anti_top.buy_ratio_5m_pct >= 55.0 or anti_top.whale_absorption:
-        p3 += 5
-    elif anti_top.buy_ratio_5m_pct >= 48.0:
+    elif -1.5 <= anti_top.p_m5 < 0.0 and anti_top.is_viral_velocity:
+        p3 += 3
+    if anti_top.buy_ratio_5m_pct >= 56.0 or anti_top.whale_absorption:
+        p3 += 6
+    elif anti_top.buy_ratio_5m_pct >= 52.0:
         p3 += 4
     if (
         anti_top.is_viral_velocity
         or anti_top.vol_m5_accel_ratio >= 1.15
         or anti_top.turnover_h1_ratio >= 1.0
     ):
-        p3 += 5
+        p3 += 7
     elif (
         anti_top.is_pullback_contraction_ok
         or anti_top.vol_m5_accel_ratio >= 0.75
         or anti_top.turnover_h1_ratio >= 0.45
     ):
-        p3 += 3
+        p3 += 5
     elif anti_top.turnover_h1_ratio >= cfg.min_turnover_h1_ratio:
-        p3 += 2
+        p3 += 3
     if anti_top.avg_ticket_5m_usd >= 60.0 or anti_top.avg_ticket_1h_usd >= 60.0:
+        p3 += 6
+    elif anti_top.avg_ticket_5m_usd >= 32.0 or anti_top.avg_ticket_1h_usd >= 32.0:
         p3 += 4
-    elif anti_top.avg_ticket_5m_usd >= 28.0 or anti_top.avg_ticket_1h_usd >= 28.0:
+    elif anti_top.avg_ticket_5m_usd >= 22.0 or anti_top.avg_ticket_1h_usd >= 22.0:
         p3 += 2
 
-    # Pilar 4: Likuiditas & Kedalaman Jupiter (20 poin)
+    # Pilar 4: Likuiditas & Kedalaman Jupiter (15 poin)
     p4 = 0
     if execution.passed and execution.round_trip_loss_01_sol_pct is not None:
         if execution.round_trip_loss_01_sol_pct <= 2.0:
-            p4 += 8
+            p4 += 6
         elif execution.round_trip_loss_01_sol_pct <= 3.5:
-            p4 += 6
+            p4 += 5
         else:
-            p4 += 4
+            p4 += 3
         if (execution.depth_loss_1_sol_pct or 99.0) <= 7.0:
-            p4 += 8
-        elif (execution.depth_loss_1_sol_pct or 99.0) <= 11.0:
             p4 += 6
+        elif (execution.depth_loss_1_sol_pct or 99.0) <= 11.0:
+            p4 += 4
         else:
-            p4 += 4
+            p4 += 3
         if anti_top.liq_mc_ratio_pct >= 14.0:
-            p4 += 4
+            p4 += 3
         elif anti_top.liq_mc_ratio_pct >= 9.0:
             p4 += 2
 
-    # Pilar 5: Struktur Chart OHLCV, Multi-Pool Smart LP & Organik (10 poin)
+    # Pilar 5: Chart OHLCV Above-VWAP, Komunitas & Smart LP Organik (15 poin)
     from .config import ORGANIC_FEED_SOURCES
 
     organic_feeds_count = sum(1 for s in pair.feed_sources if s in ORGANIC_FEED_SOURCES)
     total_pools = max(int(pair.pool_count or 1), int(security.active_markets_count or 1))
-    p5 = 0
+    chart_pts = 0
     if structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
-        p5 += 5
+        chart_pts = 6
         age_days = anti_top.age_minutes / 1440.0
         p5_summary = f"DAILY BREAKOUT ({age_days:.1f}hri · Box {structure.base_range_pct:.0f}% · GreenVol {structure.green_vol_share_pct:.0f}%)"
     elif structure is not None and structure.passed and structure.ohlcv_verified:
-        p5 += 5
-        p5_summary = f"{structure.regime} · {total_pools} pool · {organic_feeds_count} organik"
+        chart_pts = 6 if structure.vwap_deviation_pct >= -1.0 else 5
+        p5_summary = f"{structure.regime} · VWAP {structure.vwap_deviation_pct:+.1f}% · {total_pools} pool"
     elif anti_top.is_sleeper_revival:
-        p5 += 5
+        chart_pts = 6
         age_days = anti_top.age_minutes / 1440.0
         age_str = f"{age_days:.1f}hri" if age_days >= 1.0 else f"{anti_top.age_minutes / 60.0:.0f}j"
         p5_summary = f"SLEEPER REVIVAL ({age_str} · Vol x{anti_top.vol_wake_5m_ratio:.1f}) · {organic_feeds_count} organik"
     elif structure is not None and not structure.passed:
-        p5 += 0
+        chart_pts = 0
         p5_summary = f"{structure.regime} · {organic_feeds_count} organik"
     else:
-        if 20.0 <= anti_top.age_minutes <= 360.0:
-            p5 += 4
-        elif anti_top.age_minutes > 360.0:
-            p5 += 3
-        else:
-            p5 += 1
+        chart_pts = 3 if anti_top.age_minutes >= 20.0 else 1
         p5_summary = f"Usia {anti_top.age_minutes:.0f}m · {total_pools} pool · {organic_feeds_count} organik"
 
-    organic_pts = organic_feeds_count * 2 + (1 if organic_feeds_count > 0 else 0)
+    dna_pts = 0
+    if pair.has_socials:
+        dna_pts += 2
+    if pair.has_website:
+        dna_pts += 1
+    if organic_feeds_count >= 2:
+        dna_pts += 3
+    elif organic_feeds_count == 1:
+        dna_pts += 2
     if total_pools >= 2:
-        organic_pts += 1
+        dna_pts += 2
     if not pair.is_boosted:
-        organic_pts += 1
-    p5 += min(5, organic_pts)
+        dna_pts += 1
+    p5 = min(15, chart_pts + min(9, dna_pts))
 
     pillars = (
         PillarScore(
-            "Keamanan & Adopsi",
+            "Keamanan & Densitas Holder",
             p1,
             25,
-            f"{security.pareto_status} · {security.total_holders:,}H ({security.holders_per_min:.1f}/m)",
+            f"{security.pareto_status} · {security.total_holders:,}H (${security.mc_per_holder_usd:,.0f}/H)",
         ),
-        PillarScore("Koridor & Headroom", p2, 25, f"Net +{anti_top.net_headroom_pct:.1f}%"),
+        PillarScore("Koridor & Headroom", p2, 20, f"Net +{anti_top.net_headroom_pct:.1f}%"),
         PillarScore(
-            "Viral Demand & Flow",
+            "Momentum & Demand Flow",
             p3,
-            20,
-            f"5m ${pair.vol_m5:,.0f} · Turn1h {anti_top.turnover_h1_ratio:.2f}x",
+            25,
+            f"5m ${pair.vol_m5:,.0f} · Buy {anti_top.buy_ratio_5m_pct:.0f}% · Turn1h {anti_top.turnover_h1_ratio:.2f}x",
         ),
-        PillarScore("Likuiditas & Jupiter", p4, 20, execution.status),
-        PillarScore("Chart OHLCV & Smart LP", p5, 10, p5_summary),
+        PillarScore("Likuiditas & Jupiter", p4, 15, execution.status),
+        PillarScore("VWAP, Komunitas & Smart LP", p5, 15, p5_summary),
     )
     total_score = sum(p.score for p in pillars)
 

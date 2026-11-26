@@ -20,7 +20,14 @@ export interface DexPairLike {
   txns?: {
     m5?: { buys?: number; sells?: number };
     h1?: { buys?: number; sells?: number };
+    h6?: { buys?: number; sells?: number };
     h24?: { buys?: number; sells?: number };
+  };
+  boosts?: { active?: number };
+  info?: {
+    imageUrl?: string;
+    websites?: Array<{ url?: string }>;
+    socials?: Array<{ type?: string; url?: string }>;
   };
 }
 
@@ -414,11 +421,55 @@ export function evaluateSecurityLayer(
       ? Math.min(30.0, outsidePoolPct * 0.32)
       : 28.0;
 
+  const spotMcVal = asNum(pair.marketCap) || asNum(pair.fdv);
+  const mcPerHolderUsd = totalHolders > 0 && spotMcVal > 0 ? Number((spotMcVal / totalHolders).toFixed(1)) : 0;
+  const maxMcPerHolder = spotMcVal >= 210_000 ? 280 : 320;
+  const holderDensityOk = totalHolders === 0 || mcPerHolderUsd <= maxMcPerHolder;
+
+  const toxicRisks = Array.isArray(rug.risks)
+    ? rug.risks
+        .filter((r) => {
+          const lvl = String(r?.level ?? '').toLowerCase();
+          const name = String(r?.name ?? '').toLowerCase();
+          return (
+            ['danger', 'error', 'critical', 'warn'].includes(lvl) &&
+            (name.includes('high holder correlation') ||
+              name.includes('high market cap per holder') ||
+              name.includes('copycat') ||
+              name.includes('single holder ownership') ||
+              name.includes('low liquidity'))
+          );
+        })
+        .map((r) => String(r?.name ?? 'risk'))
+    : [];
+  const badRcScore = rugScoreVal !== null && rugScoreVal > 35;
+  const rugIntegrityOk = toxicRisks.length === 0 && !badRcScore;
+
+  checks.push({
+    id: 'rugcheck_integrity',
+    layer: 'SECURITY',
+    label: 'Integritas Risiko RugCheck (Anti-Bundler)',
+    passed: rugIntegrityOk,
+    severity: 'HARD_VETO',
+    actual: rugIntegrityOk
+      ? `Score ${rugScoreVal ?? 'N/A'} · Bersih`
+      : `Score ${rugScoreVal ?? 'N/A'} · ${toxicRisks.join(', ') || 'Skor > 35'}`,
+    threshold: 'RC Score <= 35 & bebas High Holder Correlation / Copycat / Hollow MC',
+    detail: rugIntegrityOk
+      ? 'Skor RugCheck sehat tanpa sinyal korelasi dompet bundler/cabal.'
+      : `Ditolak: Risiko on-chain tinggi (${toxicRisks.join(', ') || `RC score ${rugScoreVal} > 35`}).`,
+  });
+  if (!rugIntegrityOk) {
+    vetoReasons.push(`Risiko RugCheck tinggi (${toxicRisks[0] ?? `score ${rugScoreVal} > 35`})`);
+  }
+
   const isNanoSwarm =
-    outsidePoolPct >= 65 && (top10PurePct < 5.2 || maxSinglePurePct < 0.65 || (outsidePoolPct >= 70 && rank5PurePct < 0.45));
+    (outsidePoolPct >= 65 &&
+      (top10PurePct < 5.2 || maxSinglePurePct < 0.65 || (outsidePoolPct >= 70 && rank5PurePct < 0.45))) ||
+    (totalHolders >= 500 && pureHolders.length >= 5 && top10PurePct < 3.5);
   const isCabalConcentrated =
     top10PurePct > top10Ceiling || maxSinglePurePct > maxSingleAllowed || insiderHoldersCount >= 3;
-  const holdersEnough = totalHolders === 0 || totalHolders >= minHoldersRequired;
+  const holdersEnough = totalHolders === 0 || (totalHolders >= minHoldersRequired && holderDensityOk);
 
   // Detect identical twin-wallet split clusters (>= 4 wallets within 0.015% of each other)
   let maxTwinCluster = 1;
@@ -438,22 +489,24 @@ export function evaluateSecurityLayer(
   checks.push({
     id: 'pareto_holders',
     layer: 'SECURITY',
-    label: 'Smart Viral Pareto & Anti-Nano-Swarm',
+    label: 'Smart Viral Pareto & Densitas MC/Holder (Anti-Hollow-Shell)',
     passed: paretoOk,
     severity: 'HARD_VETO',
-    actual: `Top10: ${top10PurePct.toFixed(1)}% · Max: ${maxSinglePurePct.toFixed(2)}% · Holders: ${totalHolders.toLocaleString()} (${holdersPerMin.toFixed(1)}/m)`,
-    threshold: `Top10 <= ${top10Ceiling.toFixed(1)}% · Max <= ${maxSingleAllowed.toFixed(1)}% · Anti-Swarm · >= ${minHoldersRequired} holders`,
+    actual: `Top10: ${top10PurePct.toFixed(1)}% · Max: ${maxSinglePurePct.toFixed(2)}% · ${totalHolders.toLocaleString()}H ($${Math.round(mcPerHolderUsd)}/H)`,
+    threshold: `Top10 3.5%–${top10Ceiling.toFixed(1)}% · >= ${minHoldersRequired}H · <= $${maxMcPerHolder}/H`,
     detail: isNanoSwarm
-      ? 'Pola Nano-Swarm terdeteksi: suplai luar pool besar tapi dipecah ke ratusan dompet bot mikro.'
+      ? 'Pola Nano-Swarm terdeteksi: suplai dipecah ke ratusan/ribuan dompet bot mikro terkoordinasi.'
       : isCabalConcentrated
       ? `Konsentrasi whale/insider terlalu tinggi (Top10 ${top10PurePct.toFixed(1)}%, Max ${maxSinglePurePct.toFixed(2)}%).`
       : hasTwinCabal
       ? `Kluster ${maxTwinCluster} dompet kembar identik terdeteksi (indikasi split-wallet bundler).`
+      : !holderDensityOk
+      ? `Hollow Shell / Gelembung Cabal: MC/Holder terlalu mahal ($${Math.round(mcPerHolderUsd)}/H > $${maxMcPerHolder}/H) — rawan terjun bebas.`
       : !holdersEnough
       ? `Jumlah holder terlalu sedikit (${totalHolders} < ${minHoldersRequired}).`
       : cleanViralPareto && maxSinglePurePct > 6.5
       ? `Lolos Smart Viral Pareto (Score ${rugScoreVal}, 0 risk, 0% dev, ${totalHolders.toLocaleString()}H).`
-      : 'Kurva distribusi holder sehat mengikuti hukum Pareto organik.',
+      : 'Kurva distribusi holder & densitas MC/holder sehat mengikuti hukum Pareto organik.',
   });
 
   if (isNanoSwarm) vetoReasons.push('Pola Nano-Swarm / Decoy Botnet terdeteksi (Hukum Pareto gagal)');
@@ -461,7 +514,10 @@ export function evaluateSecurityLayer(
     vetoReasons.push(`Konsentrasi Top-10/Whale tinggi (Top10 ${top10PurePct.toFixed(1)}%, Max ${maxSinglePurePct.toFixed(2)}%)`);
   }
   if (hasTwinCabal) vetoReasons.push(`Kluster ${maxTwinCluster} dompet kembar bundler terdeteksi`);
-  if (!holdersEnough) vetoReasons.push(`Holders terlalu minim (${totalHolders} < ${minHoldersRequired})`);
+  if (!holderDensityOk) vetoReasons.push(`Hollow Shell: MC/Holder $${Math.round(mcPerHolderUsd)}/H > $${maxMcPerHolder}/H`);
+  if (totalHolders > 0 && totalHolders < minHoldersRequired) {
+    vetoReasons.push(`Holders terlalu minim (${totalHolders} < ${minHoldersRequired})`);
+  }
 
   return {
     passed: vetoReasons.length === 0,
@@ -487,6 +543,7 @@ export function evaluateSecurityLayer(
       rugScore: rugScoreVal,
       holdersPerMin,
       cleanViralPareto,
+      mcPerHolderUsd,
     },
   };
 }
