@@ -359,7 +359,7 @@ def evaluate_security(
     )
 
     fasttrack_clean_ok = (not require_hyper_viral_holders) or (
-        total_holders >= 750 and warn_or_danger_risks_early == 0 and dev_pct <= 0.05
+        total_holders >= 500 and warn_or_danger_risks_early == 0 and dev_pct <= 0.05
     )
     holders_ok = (
         ((total_holders == 0) and not require_hyper_viral_holders)
@@ -378,7 +378,7 @@ def evaluate_security(
                 else "N/A"
             ),
             threshold=(
-                f">= {min_holders_req:,}H, <= ${max_mc_per_holder:.0f}/H & 0 risks (Fast-Track)"
+                f">= 500H, <= ${max_mc_per_holder:.0f}/H & 0 risks (Early Fast-Track 6-9m)"
                 if require_hyper_viral_holders
                 else f">= {min_holders_req:,}H & <= ${max_mc_per_holder:.0f} MC/holder"
             ),
@@ -386,7 +386,7 @@ def evaluate_security(
                 f"Basis komunitas holder padat ({total_holders:,} dompet, ${mc_per_holder_usd:,.0f}/holder, {holders_per_min:.1f}/m)."
                 if holders_ok
                 else (
-                    f"DITOLAK (Fast-Track < 20m): Wajib >= 750H, <= $300/H & 0 risks (aktual {total_holders:,}H, ${mc_per_holder_usd:,.0f}/H, {warn_or_danger_risks_early} risk)."
+                    f"DITOLAK (Early Fast-Track < 10m): Wajib >= 500H, <= $300/H & 0 risks (aktual {total_holders:,}H, ${mc_per_holder_usd:,.0f}/H, {warn_or_danger_risks_early} risk)."
                     if require_hyper_viral_holders
                     else (
                         f"DITOLAK (Hollow Shell / Gelembung Cabal): MC/Holder terlalu mahal (${mc_per_holder_usd:,.0f}/holder > ${max_mc_per_holder:.0f}) — rawan terjun bebas saat cabal jual."

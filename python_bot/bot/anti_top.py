@@ -76,17 +76,17 @@ def evaluate_anti_top(
         (pair.vol_m5 >= 15_000.0 and pair.vol_h1 >= 120_000.0 and turnover_h1_ratio >= 0.70)
         or (pair.vol_m5 >= 25_000.0 and pair.vol_h1 >= 180_000.0 and turnover_h1_ratio >= 0.50)
     )
-    # Hyper-Viral Fast-Track (v4.1): koin 12–19m dgn arus modal masif seperti PAIR ($73K/5m, $256K/1h)
-    # akan tetap diverifikasi ketat di Layer 1 (>=750 holders, 0 risks, 0% dev) & Layer 2B (OHLCV 5m/1m).
+    # Ultra-Early Organic Fast-Track (v5.1): koin 6–9m dgn arus modal kuat langsung ditangkap di gelombang awal
+    # tetap diverifikasi ketat di Layer 1 (>=500 holders, 0 risks, 0% dev) & Layer 2B (OHLCV 1m->2m/3m).
     is_hyper_viral_fasttrack = (
-        12.0 <= age_minutes < cfg.min_pair_age_minutes
-        and pair.vol_m5 >= 35_000.0
-        and pair.vol_h1 >= 150_000.0
-        and turnover_h1_ratio >= 1.20
-        and liq_usd >= 20_000.0
-        and buy_ratio_1h >= 52.0
-        and buy_ratio_5m >= 48.0
-        and tx_1h >= 600
+        6.0 <= age_minutes < cfg.min_pair_age_minutes
+        and pair.vol_m5 >= 25_000.0
+        and pair.vol_h1 >= 90_000.0
+        and turnover_h1_ratio >= 1.00
+        and liq_usd >= 16_000.0
+        and buy_ratio_1h >= 54.0
+        and buy_ratio_5m >= 52.0
+        and tx_1h >= 350
     )
     # Kontraksi volume sehat saat pullback: Vol5m >= $12K tidak boleh dianggap sekarat (seperti $Zero $50K/5m di 0.43x accel!)
     is_pullback_contraction_ok = pair.vol_m5 >= 12_000.0
@@ -174,24 +174,24 @@ def evaluate_anti_top(
         )
     )
 
-    # 2b. Survival Age Guard (Blokir koin ultra-baru < 20m, kecuali jalur ketat Hyper-Viral Fast-Track 12–19m!)
+    # 2b. Survival Age Guard (v5.1: Persingkat ke >= 10m + jalur cepat Early Fast-Track 6–9m!)
     age_ok = age_minutes >= cfg.min_pair_age_minutes or is_hyper_viral_fasttrack
     checks.append(
         GateCheck(
             id="survival_age",
             layer="ANTI_TOP",
-            label="Usia Bertahan Pasca-Migrasi (Anti-Sniper Dump)",
+            label="Usia Bertahan Pasca-Migrasi (Early-Wave >=10m)",
             passed=age_ok,
             severity="PASS" if age_ok else "WAIT_DIP",
-            actual=f"{age_minutes:.0f} menit" + (" (FAST-TRACK)" if is_hyper_viral_fasttrack else ""),
-            threshold=f">= {cfg.min_pair_age_minutes:.0f} menit (atau >=12m Hyper-Viral Fast-Track)",
+            actual=f"{age_minutes:.0f} menit" + (" (EARLY FAST-TRACK)" if is_hyper_viral_fasttrack else ""),
+            threshold=f">= {cfg.min_pair_age_minutes:.0f} menit (atau >=6m Early Fast-Track)",
             detail=(
-                f"Jalur Cepat Hyper-Viral aktif ({age_minutes:.0f}m, Vol5m ${pair.vol_m5:,.0f}, Vol1h ${pair.vol_h1:,.0f}) — wajib >=750 holders & 0 risks di L1."
+                f"Jalur Cepat Early Fast-Track aktif ({age_minutes:.0f}m, Vol5m ${pair.vol_m5:,.0f}, Vol1h ${pair.vol_h1:,.0f}) — wajib >=500 holders & 0 risks di L1."
                 if is_hyper_viral_fasttrack
                 else (
-                    f"Sudah bertahan {age_minutes:.0f} menit pasca-migrasi (melewati gelombang dump sniper awal)."
+                    f"Sudah bertahan {age_minutes:.0f} menit pasca-migrasi (lolos dump sniper awal & masih fase early-wave)."
                     if age_ok
-                    else f"Terlalu baru ({age_minutes:.0f}m < {cfg.min_pair_age_minutes:.0f}m) — tunggu lolos dump sniper pertama & membentuk base."
+                    else f"Terlalu baru ({age_minutes:.0f}m < {cfg.min_pair_age_minutes:.0f}m) — tunggu lolos dump sniper 0–9m pertama."
                 )
             ),
         )
@@ -314,13 +314,19 @@ def evaluate_anti_top(
         req_vol_m5 = 4_500.0
         req_vol_h1 = 45_000.0
         req_turnover_h1 = 0.70
+    elif age_minutes < 30.0 and spot_mc <= 150_000.0:
+        # v5.1 Proportional Early Volume: koin muda 6–29m di MC $25K–$150K tidak perlu menunggu volume 1 jam penuh
+        age_scale = max(0.40, min(1.0, age_minutes / 30.0))
+        req_vol_m5 = cfg.min_vol_m5_usd
+        req_vol_h1 = max(22_000.0, round(cfg.min_vol_h1_usd * age_scale, 0))
+        req_turnover_h1 = max(0.35, round(cfg.min_turnover_h1_ratio * age_scale, 2))
     else:
         req_vol_m5 = cfg.min_vol_m5_usd
         req_vol_h1 = cfg.min_vol_h1_usd
         req_turnover_h1 = cfg.min_turnover_h1_ratio
 
     vol_m5_ok = pair.vol_m5 >= req_vol_m5 and tx_5m >= 8
-    vol_h1_ok = (age_minutes < 15.0) or (
+    vol_h1_ok = (age_minutes < 10.0) or (
         pair.vol_h1 >= req_vol_h1 and turnover_h1_ratio >= req_turnover_h1
     )
     # Anti-Momentum-Death (v4): kecualikan kontraksi volume sehat saat pullback jika Vol5m absolut >= $12K!
@@ -486,22 +492,36 @@ def evaluate_anti_top(
         )
     )
 
-    # 8. Pre-ATH Extension Guard (Khusus koin berusia >= 6 jam: jangan masuk dekat ATH lokal)
+    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.1: Blokir entry telat setelah naik +1000% s/d +5000%!)
+    is_extreme_parabolic_late = (not is_daily_coin) and (
+        p_h24 >= 2_000.0 or p_h6 >= 1_200.0 or p_h1 >= 900.0
+    )
+    is_intraday_late_non_base = (
+        (not is_daily_coin)
+        and age_minutes >= 60.0
+        and (not corridor_d_qualified)
+        and (p_h24 >= 850.0 or p_h6 >= 600.0)
+    )
     is_near_local_ath = age_minutes >= 360.0 and (p_h6 > 160.0 or p_h24 > 260.0)
-    pre_ath_ok = not is_near_local_ath
+    late_ath_hard_veto = is_extreme_parabolic_late or is_intraday_late_non_base
+    pre_ath_ok = (not is_near_local_ath) and (not late_ath_hard_veto)
     checks.append(
         GateCheck(
             id="pre_ath_extension",
             layer="ANTI_TOP",
-            label="Pre-ATH Extension Guard (Koin Berusia >= 6 Jam)",
+            label="Anti-Late-ATH & Pre-ATH Extension Guard (Bukan Setelah +1000%–5000%)",
             passed=pre_ath_ok,
-            severity="PASS" if pre_ath_ok else "WAIT_DIP",
-            actual=f"6h {p_h6:+.1f}% · 24h {p_h24:+.1f}% (usia {age_minutes / 60.0:.1f}j)",
-            threshold="6h <= +160% & 24h <= +260% (sebelum zona ATH lokal)",
+            severity="PASS" if pre_ath_ok else ("VETO" if late_ath_hard_veto else "WAIT_DIP"),
+            actual=f"1h {p_h1:+.0f}% · 6h {p_h6:+.0f}% · 24h {p_h24:+.0f}% (usia {age_minutes / 60.0:.1f}j)",
+            threshold="Intraday < +850% 24h (ekstrem < +2000%) · Koin >=6j: 6h <= +160% & 24h <= +260%",
             detail=(
-                "Masih di fase awal sebelum zona ATH — ruang ambil profit puluhan persen tetap terbuka."
+                "Masih di fase awal/sebelum zona puncak ekstrem — ruang kenaikan masih lebar."
                 if pre_ath_ok
-                else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu base konsolidasi baru."
+                else (
+                    f"DITOLAK (Terlalu Telat / Post-Parabolic ATH): Koin sudah melesat terlalu jauh (1h {p_h1:+.0f}%, 6h {p_h6:+.0f}%, 24h {p_h24:+.0f}%) — bukan lagi fase awal!"
+                    if late_ath_hard_veto
+                    else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu base konsolidasi baru."
+                )
             ),
         )
     )

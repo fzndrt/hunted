@@ -933,8 +933,8 @@ def test_pair_hyper_viral_green_absorption_and_fasttrack_passes_v41() -> None:
     assert st23.passed, f"PAIR 23m green viral absorption should pass, got: {[c.detail for c in st23.checks if not c.passed]}"
     assert audit23.verdict == "ENTRY_READY"
 
-    # --- KASUS B: PAIR pada menit ke-15 (Hyper-Viral Fast-Track 12-19m + agregasi candle 1m->3m) ---
-    pair_15m = _make_pair(
+    # --- KASUS B: PAIR pada menit ke-8 (Early Fast-Track 6-9m + agregasi candle 1m->2m) ---
+    pair_8m = _make_pair(
         mint="32rBxcFjCFnyqZ41CEPM5AL67X1dcw8w83vZt6Kxpump",
         pair_address="qkiYfkcm2QGfpNbEpuXvA5wiXq4F6ZdUWnZk2Y19cym",
         symbol="PAIR",
@@ -953,29 +953,29 @@ def test_pair_hyper_viral_green_absorption_and_fasttrack_passes_v41() -> None:
         price_change_m5=12.0,
         price_change_h1=310.0,
         price_change_h24=310.0,
-        pair_created_at_ms=now_ms - 15 * 60_000,
+        pair_created_at_ms=now_ms - 8 * 60_000,
         feed_sources=("gecko_trending_5m", "dex_token_profiles"),
     )
     candles_1m = [
-        [i, 0.000023 + i * 0.000006, 0.000026 + i * 0.0000065, 0.000022 + i * 0.0000058, 0.000025 + i * 0.0000062, 16_000]
-        for i in range(15)
+        [i, 0.000045 + i * 0.000007, 0.000048 + i * 0.0000075, 0.000043 + i * 0.0000068, 0.000047 + i * 0.0000072, 16_000]
+        for i in range(8)
     ]
-    synth_3m = aggregate_1m_to_3m_candles(candles_1m)
-    assert len(synth_3m) == 5
+    synth_2m = aggregate_1m_to_3m_candles(candles_1m)
+    assert len(synth_2m) == 4
 
-    at15 = evaluate_anti_top(pair_15m, cfg, now_ms=now_ms)
-    sec15 = evaluate_security(pair_15m, pair_rc, now_ms=now_ms, require_hyper_viral_holders=at15.is_hyper_viral_fasttrack)
-    st15 = evaluate_candle_structure(pair_15m, at15, synth_3m, [], cfg)
-    audit15 = score_and_finalize(pair_15m, sec15, at15, exec_ok, cfg, structure=st15)
-    assert at15.passed and at15.is_hyper_viral_fasttrack
-    assert sec15.passed
-    assert st15.passed
-    assert audit15.verdict == "ENTRY_READY"
+    at8 = evaluate_anti_top(pair_8m, cfg, now_ms=now_ms)
+    sec8 = evaluate_security(pair_8m, pair_rc, now_ms=now_ms, require_hyper_viral_holders=at8.is_hyper_viral_fasttrack)
+    st8 = evaluate_candle_structure(pair_8m, at8, synth_2m, [], cfg)
+    audit8 = score_and_finalize(pair_8m, sec8, at8, exec_ok, cfg, structure=st8)
+    assert at8.passed and at8.is_hyper_viral_fasttrack
+    assert sec8.passed
+    assert st8.passed
+    assert audit8.verdict == "ENTRY_READY"
 
-    # Pastikan koin < 20m yang holder sedikit (300H) DITOLAK di Layer 1 meski lolos Fast-Track L2A
+    # Pastikan koin < 10m yang holder sedikit (300H < 500H) DITOLAK di Layer 1 meski lolos Fast-Track L2A
     low_h_rc = dict(pair_rc)
     low_h_rc["totalHolders"] = 300
-    sec_low = evaluate_security(pair_15m, low_h_rc, now_ms=now_ms, require_hyper_viral_holders=True)
+    sec_low = evaluate_security(pair_8m, low_h_rc, now_ms=now_ms, require_hyper_viral_holders=True)
     assert not sec_low.passed
 
 
@@ -1337,4 +1337,129 @@ def test_v5_early_mihao_and_stonk_winner_dna_pass_with_high_score() -> None:
     assert st.passed and st.vwap_deviation_pct > 0.0
     assert audit.verdict == "ENTRY_READY"
     assert audit.total_score >= 85, f"Expected >= 85 score for Winner-DNA, got {audit.total_score}"
+
+
+def test_v51_dexdata_0748_weak_double_top_ath_and_5000pct_late_run_are_vetoed() -> None:
+    """v5.1: Replay forensik DEXDATA (63jDWWFw) jam 07:48 WITA (Weak Double-Top ATH $207.9K, vol 22% dr peak) & koin +5000% WAJIB VETO."""
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+
+    # Kasus A: Replay candle 5m asli DEXDATA 07:05–07:45 WITA (Puncak #1 $207.6K vol $83.4K -> Retest #2 $207.9K vol cuma $18.3K!)
+    dexdata_0748 = _make_pair(
+        mint="63jDWWFwp25ChLvsofbVRMprRbhiXuWoWVxrwFfypump",
+        symbol="DEXDATA",
+        name="DexData.org",
+        market_cap=191_891.0,
+        liquidity_usd=31_000.0,
+        vol_m5=18_329.0,
+        vol_h1=260_000.0,
+        vol_h24=380_000.0,
+        buys_m5=140,
+        sells_m5=110,
+        buys_h1=1_800,
+        sells_h1=1_400,
+        price_change_m5=17.1,
+        price_change_h1=240.0,
+        price_change_h24=520.0,
+        pair_created_at_ms=now_ms - 143 * 60_000,
+    )
+    dexdata_candles_5m = [
+        [1, 0.0000367, 0.0000441, 0.0000239, 0.0000287, 5_863],
+        [2, 0.0000287, 0.0000403, 0.0000242, 0.0000403, 5_005],
+        [3, 0.0000403, 0.0000762, 0.0000342, 0.0000614, 21_479],
+        [4, 0.0000614, 0.0001420, 0.0000533, 0.0001315, 40_022],
+        [5, 0.0001315, 0.0002076, 0.0001124, 0.0001638, 83_376],  # Puncak #1: Vol $83.4K
+        [6, 0.0001638, 0.0001883, 0.0001397, 0.0001481, 43_267],
+        [7, 0.0001481, 0.0001594, 0.0001257, 0.0001348, 14_246],
+        [8, 0.0001348, 0.0001835, 0.0001255, 0.0001639, 19_202],
+        [9, 0.0001639, 0.0002080, 0.0001481, 0.0001919, 18_329],  # Retest ATH #2: Vol anjlok jadi 22% dr peak!
+    ]
+    at_dd = evaluate_anti_top(dexdata_0748, cfg, now_ms=now_ms)
+    st_dd = evaluate_candle_structure(dexdata_0748, at_dd, dexdata_candles_5m, [], cfg)
+    assert not st_dd.passed
+    assert st_dd.regime == "EXHAUSTION_TOP"
+    assert any(c.id == "volume_exhaustion_guard" and not c.passed for c in st_dd.checks)
+
+    # Kasus B: Koin telat yang sudah naik +5,000% (50x) di 24h -> WAJIB HARD VETO di Layer 2A!
+    late_5000 = _make_pair(
+        market_cap=320_000.0,
+        liquidity_usd=48_000.0,
+        vol_m5=45_000.0,
+        vol_h1=380_000.0,
+        buys_m5=210,
+        sells_m5=150,
+        buys_h1=2_200,
+        sells_h1=1_600,
+        price_change_m5=8.0,
+        price_change_h1=220.0,
+        price_change_h6=1_800.0,
+        price_change_h24=5_000.0,
+        pair_created_at_ms=now_ms - 190 * 60_000,
+    )
+    at_5000 = evaluate_anti_top(late_5000, cfg, now_ms=now_ms)
+    assert not at_5000.passed and not at_5000.wait_dip_only
+    assert any(c.id == "pre_ath_extension" and not c.passed for c in at_5000.checks)
+
+
+def test_v51_early_launch_11m_detected_with_proportional_volume() -> None:
+    """v5.1: Koin organik kuat usia 11 menit ($68K MC, Vol5m $14K, Vol1h $28K proporsional) langsung tertangkap di awal!"""
+    from bot.scoring import score_and_finalize
+    from bot.structure import aggregate_1m_to_3m_candles, evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.015"},
+        {"outAmount": "955000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+    early_gem = _make_pair(
+        symbol="EARLYGEM",
+        market_cap=68_000.0,
+        liquidity_usd=18_500.0,
+        vol_m5=14_500.0,
+        vol_h1=32_000.0,  # Baru 11 menit -> proporsional (cukup >= $22K, tidak perlu tunggu $55K!)
+        vol_h24=32_000.0,
+        buys_m5=85,
+        sells_m5=55,
+        buys_h1=210,
+        sells_h1=140,
+        buys_h24=210,
+        sells_h24=140,
+        price_change_m5=9.5,
+        price_change_h1=78.0,
+        price_change_h24=78.0,
+        pool_count=2,
+        is_boosted=False,
+        has_socials=True,
+        social_count=2,
+        has_website=True,
+        pair_created_at_ms=now_ms - 11 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    rc = _clean_rugcheck()
+    rc["score_normalised"] = 1
+    rc["totalHolders"] = 580  # $117/holder!
+    candles_1m = [
+        [i, 0.000038 + i * 0.0000028, 0.000040 + i * 0.0000030, 0.000037 + i * 0.0000027, 0.0000395 + i * 0.0000029, 3_000]
+        for i in range(11)
+    ]
+    synth_2m = aggregate_1m_to_3m_candles(candles_1m)
+    assert len(synth_2m) >= 4
+
+    sec = evaluate_security(early_gem, rc, now_ms=now_ms)
+    at = evaluate_anti_top(early_gem, cfg, now_ms=now_ms)
+    st = evaluate_candle_structure(early_gem, at, synth_2m, [], cfg)
+    audit = score_and_finalize(early_gem, sec, at, exec_ok, cfg, structure=st)
+
+    assert sec.passed, f"Early gem L1 failed: {[c.detail for c in sec.checks if not c.passed]}"
+    assert at.passed, f"Early gem L2A failed: {[c.detail for c in at.checks if not c.passed]}"
+    assert st.passed, f"Early gem L2B failed: {[c.detail for c in st.checks if not c.passed]}"
+    assert audit.verdict == "ENTRY_READY"
+    assert audit.total_score >= 82
+
 

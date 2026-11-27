@@ -228,9 +228,10 @@ def _evaluate_intraday_ohlcv(
         )
     )
 
-    # 2. Deteksi Volume Exhaustion di Pucuk
+    # 2. Deteksi Volume Exhaustion, Weak Double-Top di ATH & Anti-Late-ATH Multi-X Run (v5.1)
     window_vols = effective_vols[-12:]
     peak_candle_vol = max(window_vols) if window_vols else 0.0
+    peak_vol_idx = window_vols.index(peak_candle_vol) if window_vols else 0
     recent_2_avg_vol = sum(effective_vols[-2:]) / 2.0
     recent_to_peak_ratio = (
         (recent_2_avg_vol / peak_candle_vol) if peak_candle_vol > 0 else 1.0
@@ -239,27 +240,69 @@ def _evaluate_intraday_ohlcv(
     med_prior_vol = median(prior_vols) if prior_vols else recent_2_avg_vol
     vol_expansion = (effective_last_vol / med_prior_vol) if med_prior_vol > 0 else 1.0
 
-    vol_exhaustion_top = (
-        anti_top.p_h1 >= 65.0
-        and drawdown_from_peak_pct <= 15.0
-        and recent_to_peak_ratio < 0.32
-        and vol_expansion < 1.15
-        and pair.vol_m5 < 25_000.0
+    # v5.1 Weak Double-Top Volume Divergence di ATH (kasus DEXDATA 07:48 WITA: gagal close di atas puncak lama $207.6K & vol anjlok jadi 22%!)
+    # Kecualikan breakout baru yang bersih di atas puncak lama dengan ekspansi volume kuat (seperti duk: Close > prior peak & vol_expansion >= 1.5x).
+    prior_peak_high = max(highs[:-1]) if len(highs) >= 2 else peak_high
+    clean_expanding_breakout = (latest_c > prior_peak_high) and (vol_expansion >= 1.20) and (latest_c >= latest_o)
+    weak_double_top_ath = (
+        len(window_vols) >= 4
+        and drawdown_from_peak_pct <= 10.0
+        and peak_vol_idx < len(window_vols) - 1
+        and recent_to_peak_ratio < 0.40
+        and (not clean_expanding_breakout)
     )
+    # v5.1 Anti-Late-ATH Multi-X Run: sudah melesat >= +500% (6x) dari dasar 5m window (atau >= +900% kapan saja) & sedang tepat di ATH (DD <= 12%)!
+    window_low_5m = min(lows) if lows else 0.0
+    run_from_low_5m_pct = (
+        ((latest_c - window_low_5m) / window_low_5m * 100.0) if window_low_5m > 0 else 0.0
+    )
+    late_ath_run_veto = (
+        drawdown_from_peak_pct <= 12.0
+        and (
+            (anti_top.age_minutes >= 40.0 and run_from_low_5m_pct >= 500.0)
+            or (run_from_low_5m_pct >= 900.0)
+        )
+    )
+
+    vol_exhaustion_top = (
+        weak_double_top_ath
+        or late_ath_run_veto
+        or (
+            anti_top.p_h1 >= 65.0
+            and drawdown_from_peak_pct <= 15.0
+            and recent_to_peak_ratio < 0.32
+            and vol_expansion < 1.15
+            and pair.vol_m5 < 25_000.0
+        )
+    )
+    if weak_double_top_ath:
+        exhaust_detail = (
+            f"DITOLAK (Weak Double-Top di ATH): Harga menyentuh ulang puncak (DD -{drawdown_from_peak_pct:.1f}%), "
+            f"tetapi volume retest anjlok ke {recent_to_peak_ratio * 100:.0f}% dari puncak sebelumnya (rawan bantingan keras)."
+        )
+    elif late_ath_run_veto:
+        exhaust_detail = (
+            f"DITOLAK (Late-ATH Run): Harga sudah melesat +{run_from_low_5m_pct:.0f}% dari dasar 5m dan sedang menempel ATH (DD -{drawdown_from_peak_pct:.1f}%) — terlalu telat, bukan entry awal."
+        )
+    elif vol_exhaustion_top:
+        exhaust_detail = (
+            f"DITOLAK: Volume Exhaustion di pucuk — harga masih tinggi (+{anti_top.p_h1:.0f}% 1h) tapi volume anjlok ke {recent_to_peak_ratio * 100:.0f}% dari puncaknya (siap dump)."
+        )
+    else:
+        exhaust_detail = (
+            f"Volume 5m masih terjaga/ekspansi ({recent_to_peak_ratio * 100:.0f}% dari puncak, ekspansi {vol_expansion:.2f}x · Run +{run_from_low_5m_pct:.0f}%)."
+        )
+
     checks.append(
         GateCheck(
             id="volume_exhaustion_guard",
             layer="STRUCTURE",
-            label="Anti-Volume Exhaustion (Bensin Habis di Pucuk)",
+            label="Anti-Weak-Double-Top, Late-ATH Run & Volume Exhaustion",
             passed=not vol_exhaustion_top,
             severity="PASS" if not vol_exhaustion_top else "VETO",
-            actual=f"Vol/Peak {recent_to_peak_ratio * 100:.0f}% · Ekspansi {vol_expansion:.2f}x",
-            threshold="Vol terbaru >= 32% peak candle saat extended (atau ekspansi >= 1.15x / >= $25K/5m)",
-            detail=(
-                f"Volume 5m masih terjaga/ekspansi ({recent_to_peak_ratio * 100:.0f}% dari puncak, ekspansi {vol_expansion:.2f}x)."
-                if not vol_exhaustion_top
-                else f"DITOLAK: Volume Exhaustion di pucuk — harga masih tinggi (+{anti_top.p_h1:.0f}% 1h) tapi volume anjlok ke {recent_to_peak_ratio * 100:.0f}% dari puncaknya (siap dump)."
-            ),
+            actual=f"Vol/Peak {recent_to_peak_ratio * 100:.0f}% · Run +{run_from_low_5m_pct:.0f}% · DD -{drawdown_from_peak_pct:.1f}%",
+            threshold="Retest ATH wajib Vol >= 40% peak · Bukan ATH setelah +500% run",
+            detail=exhaust_detail,
         )
     )
 
@@ -652,12 +695,13 @@ def evaluate_candle_structure(
 
 
 def aggregate_1m_to_3m_candles(candles_1m: list[list[float]]) -> list[list[float]]:
-    """Gabungkan candle 1-menit menjadi bar 3-menit untuk memverifikasi pool hyper-viral berusia 12–19m."""
-    if len(candles_1m) < 9:
+    """Gabungkan candle 1-menit menjadi bar 3-menit (atau 2-menit untuk koin 6–11m) agar pool muda tetap terverifikasi OHLCV."""
+    if len(candles_1m) < 6:
         return []
+    step = 3 if len(candles_1m) >= 12 else 2
     grouped: list[list[float]] = []
-    for i in range(0, len(candles_1m) - 2, 3):
-        chunk = candles_1m[i : i + 3]
+    for i in range(0, len(candles_1m) - (step - 1), step):
+        chunk = candles_1m[i : i + step]
         grouped.append(
             [
                 chunk[0][0],
@@ -677,17 +721,21 @@ async def fetch_and_evaluate_structure(
     anti_top: AntiTopResult,
     cfg: BotConfig,
 ) -> StructureResult:
-    """Tarik OHLCV dari GeckoTerminal sesuai usia token lalu evaluasi struktur candle (dengan cadangan 1m untuk pool baru)."""
+    """Tarik OHLCV dari GeckoTerminal sesuai usia token lalu evaluasi struktur candle (cadangan 1m->2m/3m untuk SEMUA koin muda < 25m)."""
     if anti_top.age_minutes >= 20.0 * 60.0:
         candles_1h = await fetch_pool_ohlcv(client, pair.pair_address, "hour", 1, 24)
         await asyncio.sleep(0.35)
         candles_5m = await fetch_pool_ohlcv(client, pair.pair_address, "minute", 5, 12)
         return evaluate_candle_structure(pair, anti_top, candles_5m, candles_1h, cfg)
     candles_5m = await fetch_pool_ohlcv(client, pair.pair_address, "minute", 5, 24)
-    if len(candles_5m) < 4 and (anti_top.is_hyper_viral_fasttrack or anti_top.is_viral_velocity):
+    if len(candles_5m) < 4 and (
+        anti_top.age_minutes <= 25.0
+        or anti_top.is_hyper_viral_fasttrack
+        or anti_top.is_viral_velocity
+    ):
         await asyncio.sleep(0.35)
         candles_1m = await fetch_pool_ohlcv(client, pair.pair_address, "minute", 1, 24)
-        synth_3m = aggregate_1m_to_3m_candles(candles_1m)
-        if len(synth_3m) >= 4:
-            return evaluate_candle_structure(pair, anti_top, synth_3m, [], cfg)
+        synth_early = aggregate_1m_to_3m_candles(candles_1m)
+        if len(synth_early) >= 4:
+            return evaluate_candle_structure(pair, anti_top, synth_early, [], cfg)
     return evaluate_candle_structure(pair, anti_top, candles_5m, [], cfg)

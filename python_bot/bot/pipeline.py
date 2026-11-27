@@ -170,11 +170,16 @@ async def run_scan_cycle(
         age_m = _age_min(p)
         survived_sniper = 1 if (
             age_m >= cfg.min_pair_age_minutes
-            or (12.0 <= age_m < cfg.min_pair_age_minutes and p.vol_m5 >= 35_000.0 and p.vol_h1 >= 150_000.0)
+            or (6.0 <= age_m < cfg.min_pair_age_minutes and p.vol_m5 >= 25_000.0 and p.vol_h1 >= 90_000.0)
         ) else 0
         has_live_vol = 1 if (
             p.vol_m5 >= 4_500.0 or (age_m >= 720.0 and p.vol_m5 >= 1_800.0)
         ) else 0
+        early_wave_bonus = (
+            28_000.0
+            if (25_000.0 <= p.market_cap <= 180_000.0 and 6.0 <= age_m <= 180.0 and p.price_change_h24 < 450.0)
+            else 0.0
+        )
         community_bonus = 18_000.0 if (p.has_socials or p.has_website) else 0.0
         multi_pool_bonus = 20_000.0 if p.pool_count >= 2 else 0.0
         green_bonus = 15_000.0 if p.price_change_m5 >= 0.5 else 0.0
@@ -184,7 +189,7 @@ async def run_scan_cycle(
             is_wl,
             survived_sniper,
             has_live_vol,
-            organic_hits * 25_000.0 + community_bonus + multi_pool_bonus + green_bonus + p.vol_m5,
+            organic_hits * 25_000.0 + early_wave_bonus + community_bonus + multi_pool_bonus + green_bonus + p.vol_m5,
             p.vol_h1,
         )
 
@@ -195,9 +200,10 @@ async def run_scan_cycle(
             (20_000.0 <= p.market_cap <= 450_000.0 and p.liquidity_usd >= 10_000.0)
             or (450_000.0 < p.market_cap <= 900_000.0 and p.vol_h1 >= 220_000.0 and p.liquidity_usd >= 38_000.0)
         )
+        and not (_age_min(p) < 20.0 * 60.0 and (p.price_change_h24 >= 2_000.0 or p.price_change_h6 >= 1_200.0))
     ]
 
-    # Bagi slot Stage-2 antara koin Intraday (20m–20j) dan koin Konsolidasi Harian (>= 20j)
+    # Bagi slot Stage-2 antara koin Intraday (6m–20j) dan koin Konsolidasi Harian (>= 20j)
     # agar koin harian yang sedang konsolidasi naik TIDAK kalah slot dari koin baru!
     daily_pool = [p for p in eligible if _age_min(p) >= 20.0 * 60.0]
     intraday_pool = [p for p in eligible if _age_min(p) < 20.0 * 60.0]

@@ -33,7 +33,7 @@ def format_entry_alert(audit: AuditResult) -> str:
     elif at.is_corridor_d_viral_base:
         title_line = f"🚀 <b>VIRAL BASE BREAKOUT (CORRIDOR D) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_hyper_viral_fasttrack:
-        title_line = f"⚡ <b>HYPER-VIRAL FAST-TRACK — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"⚡ <b>EARLY FAST-TRACK (6–9m) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif st is not None and st.regime == "PULLBACK_RECLAIM" and at.is_viral_velocity:
         title_line = f"🔥 <b>VIRAL PULLBACK RECLAIM — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_sleeper_revival:
@@ -41,7 +41,7 @@ def format_entry_alert(audit: AuditResult) -> str:
     elif at.is_steady_organic_climber:
         title_line = f"📈 <b>STEADY ORGANIC CLIMBER — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     else:
-        title_line = f"🟢 <b>ENTRY READY (v5.0 ANTI-FREEFALL) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>ENTRY READY (v5.1 EARLY-WAVE) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
 
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         chart_line = (

@@ -91,15 +91,15 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     (volM5 >= 15_000 && volH1 >= 120_000 && turnoverH1Ratio >= 0.7) ||
     (volM5 >= 25_000 && volH1 >= 180_000 && turnoverH1Ratio >= 0.5);
   const isHyperViralFastTrack =
-    ageMinutes >= 12 &&
-    ageMinutes < 20 &&
-    volM5 >= 35_000 &&
-    volH1 >= 150_000 &&
-    turnoverH1Ratio >= 1.2 &&
-    liqUsd >= 20_000 &&
-    buyRatio1hPctEarly >= 52.0 &&
-    buyRatio5mPctEarly >= 48.0 &&
-    totalTxH1 >= 600;
+    ageMinutes >= 6 &&
+    ageMinutes < 10 &&
+    volM5 >= 25_000 &&
+    volH1 >= 90_000 &&
+    turnoverH1Ratio >= 1.0 &&
+    liqUsd >= 16_000 &&
+    buyRatio1hPctEarly >= 54.0 &&
+    buyRatio5mPctEarly >= 52.0 &&
+    totalTxH1 >= 350;
   const isPullbackContractionOk = volM5 >= 12_000;
 
   const isBoosted = asNum(pair.boosts?.active) > 0;
@@ -174,24 +174,24 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     );
   }
 
-  // 2b. Survival Age Guard (>= 20m — kecuali jalur ketat Hyper-Viral Fast-Track 12–19m!)
-  const survivalAgeOk = ageMinutes >= 20 || isHyperViralFastTrack;
+  // 2b. Survival Age Guard (v5.1: >= 10m — atau jalur cepat Early Fast-Track 6–9m!)
+  const survivalAgeOk = ageMinutes >= 10 || isHyperViralFastTrack;
   checks.push({
     id: 'survival_age',
     layer: 'ANTI_TOP',
-    label: 'Usia Bertahan Pasca-Migrasi (Anti-Sniper Dump)',
+    label: 'Usia Bertahan Pasca-Migrasi (Early-Wave >=10m)',
     passed: survivalAgeOk,
     severity: 'WAIT_DIP',
-    actual: `${Math.round(ageMinutes)} menit${isHyperViralFastTrack ? ' (FAST-TRACK)' : ''}`,
-    threshold: '>= 20 menit (atau >=12m Hyper-Viral Fast-Track)',
+    actual: `${Math.round(ageMinutes)} menit${isHyperViralFastTrack ? ' (EARLY FAST-TRACK)' : ''}`,
+    threshold: '>= 10 menit (atau >=6m Early Fast-Track)',
     detail: isHyperViralFastTrack
-      ? `Jalur Cepat Hyper-Viral aktif (${Math.round(ageMinutes)}m, Vol5m $${Math.round(volM5).toLocaleString()}).`
+      ? `Jalur Cepat Early Fast-Track aktif (${Math.round(ageMinutes)}m, Vol5m $${Math.round(volM5).toLocaleString()}).`
       : survivalAgeOk
-      ? `Sudah bertahan ${Math.round(ageMinutes)} menit pasca-migrasi.`
-      : `Terlalu baru (${Math.round(ageMinutes)}m < 20m) — tunggu lolos dump sniper pertama & membentuk base.`,
+      ? `Sudah bertahan ${Math.round(ageMinutes)} menit pasca-migrasi (lolos dump sniper awal).`
+      : `Terlalu baru (${Math.round(ageMinutes)}m < 10m) — tunggu lolos dump sniper 0–9m pertama.`,
   });
   if (!survivalAgeOk) {
-    waitReasons.push(`Terlalu baru (${Math.round(ageMinutes)}m < 20m) — tunggu lolos dump sniper awal`);
+    waitReasons.push(`Terlalu baru (${Math.round(ageMinutes)}m < 10m) — tunggu lolos dump sniper awal`);
   }
 
   // 3. Anti-Parabolic Cap & Anti-Freefall Floor (v5: Stop buying falling knives!)
@@ -275,13 +275,27 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     buyRatio5mPctEarly >= 52.0 &&
     avgTicketM5Usd >= 28.0 &&
     totalTxH1 >= 300;
+  const isEarlySub30m = !isAgedCoin && !isSteadyOrganicClimber && ageMinutes < 30 && spotMc <= 150_000;
+  const earlyAgeScale = Math.max(0.4, Math.min(1.0, ageMinutes / 30));
   const reqVolM5 = isAgedCoin ? 2_000 : isSteadyOrganicClimber ? 4_500 : 8_000;
-  const reqVolH1 = isAgedCoin ? 12_000 : isSteadyOrganicClimber ? 45_000 : 55_000;
-  const reqTurnH1 = isAgedCoin ? 0.15 : isSteadyOrganicClimber ? 0.7 : 0.6;
+  const reqVolH1 = isAgedCoin
+    ? 12_000
+    : isSteadyOrganicClimber
+    ? 45_000
+    : isEarlySub30m
+    ? Math.max(22_000, Math.round(55_000 * earlyAgeScale))
+    : 55_000;
+  const reqTurnH1 = isAgedCoin
+    ? 0.15
+    : isSteadyOrganicClimber
+    ? 0.7
+    : isEarlySub30m
+    ? Math.max(0.35, Number((0.6 * earlyAgeScale).toFixed(2)))
+    : 0.6;
   const volVelocityOk =
     totalTxM5 >= 8 &&
     volM5 >= reqVolM5 &&
-    (ageMinutes < 15 || (volH1 >= reqVolH1 && turnoverH1Ratio >= reqTurnH1));
+    (ageMinutes < 10 || (volH1 >= reqVolH1 && turnoverH1Ratio >= reqTurnH1));
   const hasMinActivity = volVelocityOk && buyerPressureOk;
 
   const baseMinTx24h = corridor?.minTx24h ?? 60;
@@ -350,22 +364,32 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   if (!buyerPressureOk) vetoReasons.push(`Buyer belum dominan (5m ${buyRatio5mPctEarly.toFixed(0)}%, 1h ${buyRatio1hPctEarly.toFixed(0)}% < 52%)`);
   if (!tx24hOk) vetoReasons.push(`Transaksi pair kurang (${totalTx24h} < ${effectiveMinTx24h})`);
 
-  // 6. Pre-ATH Extension Guard (Khusus koin berusia >= 6 jam: jangan kejar yang sudah terbang dekat ATH lokal)
+  // 6. Anti-Late-ATH & Pre-ATH Extension Guard (v5.1: Blokir entry telat setelah naik +1000% s/d +5000%!)
+  const isExtremeParabolicLate = !isDailyCoin && (pH24 >= 2_000 || pH6 >= 1_200 || pH1 >= 900);
+  const isIntradayLateNonBase =
+    !isDailyCoin && ageMinutes >= 60 && !isCorridorDViralBase && (pH24 >= 850 || pH6 >= 600);
   const isNearLocalAth = ageMinutes >= 360 && (pH6 > 160 || pH24 > 260);
-  const preAthOk = !isNearLocalAth;
+  const lateAthHardVeto = isExtremeParabolicLate || isIntradayLateNonBase;
+  const preAthOk = !isNearLocalAth && !lateAthHardVeto;
   checks.push({
     id: 'pre_ath_extension',
     layer: 'ANTI_TOP',
-    label: 'Pre-ATH Extension Guard (Usia >= 6 Jam)',
+    label: 'Anti-Late-ATH & Pre-ATH Extension Guard (Bukan Setelah +1000%–5000%)',
     passed: preAthOk,
-    severity: 'WAIT_DIP',
-    actual: `6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(1)}% · 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(1)}%`,
-    threshold: '6h <= +160% & 24h <= +260% (sebelum zona ATH lokal)',
-    detail: preAthOk
-      ? 'Masih di fase awal sebelum zona ATH — ruang ambil profit puluhan persen tetap sehat.'
+    severity: lateAthHardVeto ? 'HARD_VETO' : 'WAIT_DIP',
+    actual: `1h ${pH1 >= 0 ? '+' : ''}${pH1.toFixed(0)}% · 6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}% · 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%`,
+    threshold: 'Intraday < +850% 24h (ekstrem < +2000%) · Usia >=6j: 6h <= +160% & 24h <= +260%',
+    detail: lateAthHardVeto
+      ? `Terlalu telat / Post-Parabolic ATH (24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%, 6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}%) — bukan lagi entry awal!`
+      : preAthOk
+      ? 'Masih di fase awal sebelum zona puncak ekstrem — ruang kenaikan masih lebar.'
       : 'Koin berusia >= 6 jam sudah naik terlalu tinggi (mendekati ATH lokal) — tunggu pullback/base baru.',
   });
-  if (!preAthOk) {
+  if (lateAthHardVeto) {
+    vetoReasons.push(
+      `Terlalu telat di ATH pasca-parabolik (24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%, 6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}%)`
+    );
+  } else if (!preAthOk) {
     waitReasons.push(
       `Mendekati ATH lokal (6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}%, 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%) — tunggu pullback`
     );

@@ -182,7 +182,7 @@ class BotConfig:
     max_m5_change_pct: float = 22.0
     max_fresh_h1_change_pct: float = 115.0
     max_h1_change_pct: float = 210.0
-    min_pair_age_minutes: float = 20.0
+    min_pair_age_minutes: float = 10.0
     min_liquidity_usd: float = 12_000.0
     min_vol_m5_usd: float = 8_000.0
     min_vol_h1_usd: float = 55_000.0
@@ -240,7 +240,7 @@ class BotConfig:
             max_m5_change_pct=_env_float("MAX_M5_CHANGE_PCT", 22.0, 8.0, 60.0),
             max_fresh_h1_change_pct=_env_float("MAX_FRESH_H1_CHANGE_PCT", 115.0, 40.0, 250.0),
             max_h1_change_pct=_env_float("MAX_H1_CHANGE_PCT", 210.0, 40.0, 500.0),
-            min_pair_age_minutes=_env_float("MIN_PAIR_AGE_MINUTES", 20.0, 0.0, 240.0),
+            min_pair_age_minutes=_env_float("MIN_PAIR_AGE_MINUTES", 10.0, 0.0, 240.0),
             min_liquidity_usd=_env_float("MIN_LIQUIDITY_USD", 12_000.0, 5_000.0, 250_000.0),
             min_vol_m5_usd=_env_float("MIN_VOL_M5_USD", 8_000.0, 1_000.0, 100_000.0),
             min_vol_h1_usd=_env_float("MIN_VOL_H1_USD", 55_000.0, 5_000.0, 500_000.0),
