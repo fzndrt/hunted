@@ -313,13 +313,16 @@ def _evaluate_intraday_ohlcv(
         and recent_to_peak_ratio < 0.40
         and (not clean_expanding_breakout)
     )
-    # v5.1 Anti-Late-ATH Multi-X Run: sudah melesat >= +500% (6x) dari dasar 5m window (atau >= +900% kapan saja) & sedang tepat di ATH (DD <= 12%)!
-    window_low_5m = min(lows) if lows else 0.0
+    # v5.4 Anti-Late-ATH Multi-X Run: hitung dari dasar real-body candle (bukan 1 jarum flash-wick launch)
+    # dan kecualikan koin Revival yang MC-nya masih kecil di Koridor A (<= $92K) dengan 24h terkendali (<= +250%)!
+    window_body_low_5m = min(min(c[1], c[4]) for c in candles_5m) if candles_5m else 0.0
     run_from_low_5m_pct = (
-        ((latest_c - window_low_5m) / window_low_5m * 100.0) if window_low_5m > 0 else 0.0
+        ((latest_c - window_body_low_5m) / window_body_low_5m * 100.0) if window_body_low_5m > 0 else 0.0
     )
+    is_small_mc_revival_base = pair.market_cap <= 92_000.0 and anti_top.p_h24 <= 250.0
     late_ath_run_veto = (
         drawdown_from_peak_pct <= 12.0
+        and (not is_small_mc_revival_base)
         and (
             (anti_top.age_minutes >= 40.0 and run_from_low_5m_pct >= 500.0)
             or (run_from_low_5m_pct >= 900.0)
@@ -387,11 +390,24 @@ def _evaluate_intraday_ohlcv(
     under_vwap_freefall = (vwap_dev_pct < -6.0) and (not is_verified_viral_reclaim)
     # Jebakan Freefall #2: 2 candle 5m terakhir KEDUANYA MERAH (sedang meluncur turun!)
     two_red_cascade = (latest_c < latest_o) and (prev_c < prev_o)
+    # v5.4 Above-VWAP Green Reclaim: harga masih jauh di atas VWAP (>= +10%) dgn 2 candle hijau beruntun
+    # (atau 1 candle hijau bersih wick < 30% usai koreksi ringan > -5%, seperti Fullball #06/#07) -> BUKAN dead-cat bounce!
+    above_vwap_green_reclaim = (
+        vwap_dev_pct >= 10.0
+        and higher_low_intact
+        and (not support_broken)
+        and latest_c >= latest_o
+        and (
+            (prev_c >= prev_o and latest_body_pct >= 2.0)
+            or (prev_body_pct > -5.0 and latest_body_pct >= 3.0 and latest_upper_wick_pct < 30.0)
+        )
+    )
     # Jebakan Freefall #3: Dead-cat micro-bounce setelah distribusi merah (DD >= 12% & GreenVol 4-bar < 48%)
     dead_cat_red_dist = (
         drawdown_from_peak_pct >= 12.0
         and green_vol_last4_pct < 48.0
         and (not is_verified_viral_reclaim)
+        and (not above_vwap_green_reclaim)
     )
     # Jebakan Freefall #4: Post-peak Lower-Low & Lower-High cascade (candle terbaru merah jebol low candle sebelumnya saat DD >= 10%)
     post_peak_ll_dump = (

@@ -236,12 +236,28 @@ def evaluate_anti_top(
         m5_floor = 0.0
         h1_floor = -2.0
 
+    # v5.4 Corridor A Revival (CTO/Kebangkitan dari dasar kecil $5K -> $61K seperti Zhaki #55):
+    # MC masih kecil (<= $92K) & tren 6h/24h terkendali (<= +160% / <= +220%), hanya 1h yg tinggi akibat efek pembagi dasar kecil!
+    is_corridor_a_revival = (
+        age_minutes >= 90.0
+        and spot_mc <= 92_000.0
+        and pair.vol_m5 >= 10_000.0
+        and pair.vol_h1 >= 55_000.0
+        and turnover_h1_ratio >= 0.85
+        and buy_ratio_5m >= 54.0
+        and buy_ratio_1h >= 54.0
+        and buy_ratio_6h >= 50.0
+        and p_h6 <= 160.0
+        and p_h24 <= 220.0
+        and (not pair.is_boosted)
+    )
+
     m5_falling = p_m5 < m5_floor
     h1_falling = p_h1 < h1_floor
     m5_too_hot = p_m5 > effective_max_m5
-    # Kunci v4/v5: koin viral ($Zero di $244K/$267K dgn +740% 1h & Vol5m $50K-$110K) TIDAK dibunuh oleh cap 1h kaku;
-    # melainkan divalidasi ketat lewat Layer 2B OHLCV 5m (VWAP + Anti-Freefall Cascade)!
-    h1_too_hot = (p_h1 > effective_max_h1) and (not is_viral_velocity)
+    # Kunci v4/v5.4: koin viral ($Zero) & Revival Koridor A ($5K->$61K seperti Zhaki) TIDAK dibunuh oleh efek pembagi 1h;
+    # melainkan divalidasi ketat lewat batas 5m (<= +22%) dan struktur candle OHLCV 5m & VWAP!
+    h1_too_hot = (p_h1 > effective_max_h1) and (not is_viral_velocity) and (not is_corridor_a_revival)
     parabolic_ok = (not m5_falling) and (not h1_falling) and (not m5_too_hot) and (not h1_too_hot)
 
     if parabolic_ok and is_viral_velocity and p_h1 > effective_max_h1:
@@ -506,9 +522,11 @@ def evaluate_anti_top(
         )
     )
 
-    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.1: Blokir entry telat setelah naik +1000% s/d +5000%!)
+    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.4: Blokir entry telat +1000%-5000%, kecualikan Revival Koridor A <= $92K!)
     is_extreme_parabolic_late = (not is_daily_coin) and (
-        p_h24 >= 2_000.0 or p_h6 >= 1_200.0 or p_h1 >= 900.0
+        p_h24 >= 2_000.0
+        or p_h6 >= 1_200.0
+        or (p_h1 >= 900.0 and not is_corridor_a_revival)
     )
     is_intraday_late_non_base = (
         (not is_daily_coin)

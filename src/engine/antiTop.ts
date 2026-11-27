@@ -218,9 +218,21 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     buyRatio1hPctEarly >= 53.0;
   const m5Floor = isDailyCoin ? 1.0 : viralMildPullbackAllowed ? -1.5 : 0.0;
   const h1Floor = isDailyCoin ? -4.0 : viralMildPullbackAllowed ? 0.0 : -2.0;
+  const isCorridorARevival =
+    ageMinutes >= 90 &&
+    spotMc <= 92_000 &&
+    volM5 >= 10_000 &&
+    volH1 >= 55_000 &&
+    turnoverH1Ratio >= 0.85 &&
+    buyRatio5mPctEarly >= 54.0 &&
+    buyRatio1hPctEarly >= 54.0 &&
+    buyRatio6hPctEarly >= 50.0 &&
+    pH6 <= 160.0 &&
+    pH24 <= 220.0 &&
+    !isBoosted;
   const m5TooHot = pM5 > effectiveMaxM5;
   const m5FallingKnife = pM5 < m5Floor || pH1 < h1Floor;
-  const h1TooExtended = pH1 > effectiveMaxH1 && !isViralVelocity;
+  const h1TooExtended = pH1 > effectiveMaxH1 && !isViralVelocity && !isCorridorARevival;
   const momentumClean = !m5TooHot && !m5FallingKnife && !h1TooExtended;
 
   checks.push({
@@ -380,8 +392,9 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   if (!buyerPressureOk) vetoReasons.push(`Buyer belum dominan (5m ${buyRatio5mPctEarly.toFixed(0)}%, 1h ${buyRatio1hPctEarly.toFixed(0)}% < 52%)`);
   if (!tx24hOk) vetoReasons.push(`Transaksi pair kurang (${totalTx24h} < ${effectiveMinTx24h})`);
 
-  // 6. Anti-Late-ATH & Pre-ATH Extension Guard (v5.1: Blokir entry telat setelah naik +1000% s/d +5000%!)
-  const isExtremeParabolicLate = !isDailyCoin && (pH24 >= 2_000 || pH6 >= 1_200 || pH1 >= 900);
+  // 6. Anti-Late-ATH & Pre-ATH Extension Guard (v5.4: Blokir entry telat +1000%-5000%, kecualikan Revival Koridor A <= $92K!)
+  const isExtremeParabolicLate =
+    !isDailyCoin && (pH24 >= 2_000 || pH6 >= 1_200 || (pH1 >= 900 && !isCorridorARevival));
   const isIntradayLateNonBase =
     !isDailyCoin && ageMinutes >= 60 && !isCorridorDViralBase && (pH24 >= 850 || pH6 >= 600);
   const isNearLocalAth = ageMinutes >= 360 && (pH6 > 160 || pH24 > 260);

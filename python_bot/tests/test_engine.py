@@ -1709,5 +1709,125 @@ def test_v53_vault_caught_early_at_70k_and_engulfing_126k() -> None:
     assert audit_8.total_score >= 85
 
 
+def test_v54_fullball_and_zhaki_caught_early_before_peak() -> None:
+    """v5.4 Forensik: Fullball ($73K-$78K sblm $140K) & Zhaki Revival ($61.7K sblm $370K) WAJIB tertangkap awal!"""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.015"},
+        {"outAmount": "955000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+
+    # --- KASUS A: Fullball (GdDpHW...v5pump) di #07 (03:25 WIB, MC $78K, Above VWAP +33%, 2 candle hijau beruntun sblm ke $140.4K) ---
+    fullball_pair = _make_pair(
+        mint="GdDpHWwrRLDHR2soP75sEtqzDzY1rkATuVszAHv5pump",
+        pair_address="8ruT8oNcToUbsJz3zQcNNsm5n9mWN99Lf3ZkGpzkqmV7",
+        symbol="Fullball",
+        name="Fullball",
+        market_cap=78_000.0,
+        liquidity_usd=20_700.0,
+        vol_m5=21_400.0,
+        vol_h1=275_300.0,
+        vol_h24=275_300.0,
+        buys_m5=395,
+        sells_m5=298,
+        buys_h1=5_080,
+        sells_h1=3_820,
+        buys_h24=5_080,
+        sells_h24=3_820,
+        price_change_m5=6.3,
+        price_change_h1=170.0,
+        price_change_h24=170.0,
+        pool_count=3,
+        is_boosted=False,
+        has_socials=True,
+        social_count=1,
+        has_website=True,
+        has_image=True,
+        pair_created_at_ms=now_ms - 35 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    fullball_rc = _clean_rugcheck()
+    fullball_rc["score_normalised"] = 1
+    fullball_rc["totalHolders"] = 2_400
+    fullball_candles = [
+        [1, 28.9e-6, 46.0e-6, 14.0e-6, 30.4e-6, 72_500],
+        [2, 30.4e-6, 60.5e-6, 19.4e-6, 53.4e-6, 28_500],
+        [3, 53.4e-6, 81.2e-6, 41.2e-6, 75.0e-6, 34_000],
+        [4, 75.0e-6, 104.8e-6, 67.3e-6, 72.7e-6, 54_400],
+        [5, 72.7e-6, 84.8e-6, 56.6e-6, 70.6e-6, 34_300],
+        [6, 70.6e-6, 79.2e-6, 41.0e-6, 73.3e-6, 30_200],  # Reclaim hijau #1
+        [7, 73.3e-6, 89.2e-6, 59.2e-6, 78.0e-6, 21_400],  # Reclaim hijau #2 (+33% di atas VWAP!)
+    ]
+    sec_f = evaluate_security(fullball_pair, fullball_rc, now_ms=now_ms)
+    at_f = evaluate_anti_top(fullball_pair, cfg, now_ms=now_ms)
+    st_f = evaluate_candle_structure(fullball_pair, at_f, fullball_candles, [], cfg)
+    audit_f = score_and_finalize(fullball_pair, sec_f, at_f, exec_ok, cfg, structure=st_f)
+    assert sec_f.passed
+    assert at_f.passed, f"Fullball L2A failed: {[c.detail for c in at_f.checks if not c.passed]}"
+    assert st_f.passed, f"Fullball L2B failed: {[c.detail for c in st_f.checks if not c.passed]}"
+    assert audit_f.verdict == "ENTRY_READY"
+    assert audit_f.total_score >= 82
+
+    # --- KASUS B: Zhaki (2YAfPh...JGpump) Revival Koridor A di #55 (01:35 WIB, MC $61.7K, 1h +1075% dari dasar $5.4K, 24h +62% sblm ke $370.1K) ---
+    zhaki_pair = _make_pair(
+        mint="2YAfPhCrGSW82Ra33sWgurXt4dQ29SwXusvUXdJGpump",
+        pair_address="3VrhjGEaG6ixPT58R3G1riM7ZCGUVSZijLhktnRCz1kv",
+        symbol="Zhaki",
+        name="Baboon Smirk",
+        market_cap=61_700.0,
+        liquidity_usd=18_300.0,
+        vol_m5=12_200.0,
+        vol_h1=66_200.0,
+        vol_h6=125_000.0,
+        vol_h24=125_000.0,
+        buys_m5=135,
+        sells_m5=104,
+        buys_h1=735,
+        sells_h1=563,
+        buys_h6=1_450,
+        sells_h6=1_150,
+        buys_h24=1_450,
+        sells_h24=1_150,
+        price_change_m5=17.3,
+        price_change_h1=1_075.0,
+        price_change_h6=62.0,
+        price_change_h24=62.0,
+        pool_count=3,
+        is_boosted=False,
+        has_socials=True,
+        social_count=1,
+        has_image=True,
+        pair_created_at_ms=now_ms - 340 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    zhaki_rc = _clean_rugcheck()
+    zhaki_rc["score_normalised"] = 1
+    zhaki_rc["totalHolders"] = 950
+    zhaki_candles = [
+        [1, 5.4e-6, 5.8e-6, 5.2e-6, 5.6e-6, 400],
+        [2, 5.6e-6, 6.2e-6, 5.5e-6, 6.0e-6, 600],
+        [3, 6.0e-6, 7.9e-6, 5.9e-6, 7.9e-6, 1_100],
+        [4, 7.9e-6, 58.9e-6, 7.8e-6, 52.6e-6, 49_900],  # Revival breakout #54
+        [5, 52.6e-6, 67.2e-6, 40.1e-6, 61.7e-6, 12_200],  # Continuation #55: MC $61.7K, +17.3%, wick 20%!
+    ]
+    sec_z = evaluate_security(zhaki_pair, zhaki_rc, now_ms=now_ms)
+    at_z = evaluate_anti_top(zhaki_pair, cfg, now_ms=now_ms)
+    st_z = evaluate_candle_structure(zhaki_pair, at_z, zhaki_candles, [], cfg)
+    audit_z = score_and_finalize(zhaki_pair, sec_z, at_z, exec_ok, cfg, structure=st_z)
+    assert sec_z.passed
+    assert at_z.passed, f"Zhaki L2A failed: {[c.detail for c in at_z.checks if not c.passed]}"
+    assert st_z.passed, f"Zhaki L2B failed: {[c.detail for c in st_z.checks if not c.passed]}"
+    assert audit_z.verdict == "ENTRY_READY"
+    assert audit_z.total_score >= 82
+
+
+
 
 
