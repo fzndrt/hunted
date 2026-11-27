@@ -199,7 +199,11 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   const effectiveMaxH1 = isProvenRunner ? cfg.maxH1ChangePct : Math.min(cfg.maxH1ChangePct, 115);
   const effectiveMaxM5 = isCorridorDViralBase ? 18.0 : cfg.maxM5ChangePct;
   const viralMildPullbackAllowed =
-    isViralVelocity && volM5 >= 25_000 && buyRatio5mPctEarly >= 52.0 && buyRatio1hPctEarly >= 53.0;
+    isViralVelocity &&
+    volM5 >= 25_000 &&
+    volH1 >= 250_000 &&
+    buyRatio5mPctEarly >= 52.0 &&
+    buyRatio1hPctEarly >= 53.0;
   const m5Floor = isDailyCoin ? 1.0 : viralMildPullbackAllowed ? -1.5 : 0.0;
   const h1Floor = isDailyCoin ? -4.0 : viralMildPullbackAllowed ? 0.0 : -2.0;
   const m5TooHot = pM5 > effectiveMaxM5;

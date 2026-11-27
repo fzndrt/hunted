@@ -158,11 +158,21 @@ def _evaluate_intraday_ohlcv(
     green_v4 = sum(v for c, v in zip(last_4, last_4_vols) if c[4] >= c[1])
     green_vol_last4_pct = (green_v4 / total_v4 * 100.0) if total_v4 > 0 else 50.0
 
-    _, latest_o, _, latest_l, latest_c, _ = candles_5m[-1]
+    _, latest_o, latest_h, latest_l, latest_c, _ = candles_5m[-1]
     _, prev_o, _, prev_l, prev_c, _ = candles_5m[-2]
     latest_body_pct = ((latest_c - latest_o) / latest_o * 100.0) if latest_o > 0 else 0.0
+    prev_body_pct = ((prev_c - prev_o) / prev_o * 100.0) if prev_o > 0 else 0.0
+    latest_range = max(0.0, latest_h - latest_l)
+    latest_upper_wick_abs = max(0.0, latest_h - max(latest_o, latest_c))
+    latest_body_abs = abs(latest_c - latest_o)
+    latest_upper_wick_pct = (latest_upper_wick_abs / latest_range * 100.0) if latest_range > 0 else 0.0
+    latest_wick_to_body = (
+        (latest_upper_wick_abs / latest_body_abs)
+        if latest_body_abs > 1e-18
+        else (99.0 if latest_upper_wick_pct >= 35.0 else 0.0)
+    )
 
-    # 1. Deteksi Blow-Off Upper Wick Rejection (v4.1/v5: bedakan candle HIJAU viral absorption vs blow-off MERAH!)
+    # 1. Deteksi Blow-Off Upper Wick, Shooting-Star & Post-Dump Rejection (v5.2: blokir pola CaveBaby tanpa bunuh Kibo/PAIR!)
     recent_2 = candles_5m[-2:]
     meaningful_wicks = [
         _upper_wick_ratio(c)
@@ -177,11 +187,17 @@ def _evaluate_intraday_ohlcv(
     max_recent_wick_pct = (max(meaningful_wicks) * 100.0) if meaningful_wicks else 0.0
     max_red_wick_pct = (max(meaningful_red_wicks) * 100.0) if meaningful_red_wicks else 0.0
 
-    # Viral Green Absorption: candle terbaru HIJAU, Higher-Low utuh, GreenVol >= 62%, Vol5m >= $25K, buyer dominan
+    # Viral Green Absorption (v5.2): candle terbaru & sebelumnya WAJIB HIJAU beruntun (bukan pantulan pasca dump merah!),
+    # low candle terbaru tidak jebol low sebelumnya, bukan Shooting Star ekstrem (wick < 60% & W/B < 4.5x),
+    # Higher-Low utuh, GreenVol >= 62%, Vol5m >= $25K, buyer dominan
     is_viral_green_absorption = (
         higher_low_intact
         and (not support_broken)
         and (latest_c >= latest_o)
+        and (prev_c >= prev_o)
+        and (latest_l >= prev_l * 0.99)
+        and (latest_upper_wick_pct < 60.0)
+        and (latest_wick_to_body < 4.5)
         and (green_vol_share_pct >= 62.0)
         and (pair.vol_m5 >= 25_000.0)
         and (anti_top.buy_ratio_5m_pct >= 52.0)
@@ -193,38 +209,70 @@ def _evaluate_intraday_ohlcv(
         if is_viral_green_absorption
         else (max_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
     )
+    # v5.2 Shooting-Star Rejection: jarum penolakan atas raksasa (>=55%) dengan rasio wick:body >=4.5x di area penurunan >=12%
+    shooting_star_rejection = (
+        latest_upper_wick_pct >= 55.0
+        and latest_wick_to_body >= 4.5
+        and drawdown_from_peak_pct >= 12.0
+    )
+    # v5.2 Post-Dump Dead-Cat Rejection: jika candle sebelumnya merah besar (<=-10%), pantulan berikutnya WAJIB bersih
+    # (dilarang punya jarum penolakan atas >=40% atau sapu Lower-Low dengan body tipis < +8%)
+    post_dump_rejection = (
+        prev_body_pct <= -10.0
+        and (
+            latest_upper_wick_pct >= 40.0
+            or (latest_l < prev_l * 0.99 and latest_body_pct < 8.0)
+        )
+    )
 
     # Pullback sehat viral boleh hingga -45% HANYA jika reclaim hijau kuat; non-viral dibatasi ketat <= -28%!
     max_allowed_dd = 45.0 if anti_top.is_viral_velocity else 28.0
     deep_crash_dump = drawdown_from_peak_pct >= max_allowed_dd
     blowoff_wick_veto = (
         wick_veto_hit
+        or shooting_star_rejection
+        or post_dump_rejection
         or (drawdown_from_peak_pct >= 20.0 and latest_body_pct <= -2.5)
         or (latest_body_pct <= -7.0)
         or deep_crash_dump
     )
+    if (not blowoff_wick_veto) and is_viral_green_absorption and max_recent_wick_pct >= 48.0:
+        wick_detail = (
+            f"Penyerapan volatilitas viral sehat (2 candle HIJAU beruntun, GreenVol {green_vol_share_pct:.0f}%, "
+            f"wick {latest_upper_wick_pct:.0f}%, W/B {latest_wick_to_body:.1f}x)."
+        )
+    elif not blowoff_wick_veto:
+        wick_detail = "Struktur candle 5m bersih tanpa jarum penolakan pucuk (blow-off / shooting-star)."
+    elif post_dump_rejection:
+        wick_detail = (
+            f"DITOLAK (Post-Dump Rejection): Pantulan gagal pasca candle dump {prev_body_pct:+.1f}% "
+            f"(wick atas {latest_upper_wick_pct:.0f}%, W/B {latest_wick_to_body:.1f}x, DD -{drawdown_from_peak_pct:.1f}%) — rawan bantingan lanjutan."
+        )
+    elif shooting_star_rejection:
+        wick_detail = (
+            f"DITOLAK (Shooting-Star Rejection): Jarum penolakan atas ekstrem {latest_upper_wick_pct:.0f}% "
+            f"(rasio wick:body {latest_wick_to_body:.1f}x, DD -{drawdown_from_peak_pct:.1f}%) — seller memukul jatuh di pucuk."
+        )
+    else:
+        wick_detail = (
+            f"DITOLAK: Terdeteksi pucuk blow-off / crash dalam "
+            f"(wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
+        )
+
     checks.append(
         GateCheck(
             id="blowoff_wick_guard",
             layer="STRUCTURE",
-            label="Anti-Blow-Off Top & Max Drawdown (5m OHLCV)",
+            label="Anti-Blow-Off Top, Shooting-Star & Post-Dump Guard (5m OHLCV)",
             passed=not blowoff_wick_veto,
             severity="PASS" if not blowoff_wick_veto else "VETO",
-            actual=f"Wick atas {max_recent_wick_pct:.0f}% · DD dr peak -{drawdown_from_peak_pct:.1f}%",
+            actual=f"Wick {latest_upper_wick_pct:.0f}% (W/B {latest_wick_to_body:.1f}x) · Prev {prev_body_pct:+.0f}% · DD -{drawdown_from_peak_pct:.1f}%",
             threshold=(
-                f"Wick < 68% (Viral Green Absorption), DD <= -{max_allowed_dd:.0f}%"
+                f"Wick < 60% & W/B < 4.5x (2x Green Viral), DD <= -{max_allowed_dd:.0f}%"
                 if is_viral_green_absorption
-                else f"Wick < 48% di pucuk, DD <= -{max_allowed_dd:.0f}% & bebas candle dump >= -7%"
+                else f"Wick < 48% (post-dump < 40%), bebas Shooting Star & dump >= -7%"
             ),
-            detail=(
-                f"Penyerapan volatilitas viral sehat (candle HIJAU, GreenVol {green_vol_share_pct:.0f}%, wick {max_recent_wick_pct:.0f}% < 68%)."
-                if (not blowoff_wick_veto) and is_viral_green_absorption and max_recent_wick_pct >= 48.0
-                else (
-                    "Struktur candle 5m bersih tanpa jarum penolakan pucuk (blow-off top)."
-                    if not blowoff_wick_veto
-                    else f"DITOLAK: Terdeteksi pucuk blow-off / crash dalam (wick atas {max_recent_wick_pct:.0f}%, turun -{drawdown_from_peak_pct:.1f}% dari puncak)."
-                )
-            ),
+            detail=wick_detail,
         )
     )
 
@@ -412,8 +460,15 @@ def _evaluate_intraday_ohlcv(
 
     passed = all(c.passed for c in checks)
     has_veto = any((not c.passed) and c.severity == "VETO" for c in checks)
-    if blowoff_wick_veto or vol_exhaustion_top:
-        regime: StructureRegime = "EXHAUSTION_TOP"
+    if under_vwap_freefall and not (wick_veto_hit or shooting_star_rejection or vol_exhaustion_top):
+        regime: StructureRegime = "BREAKDOWN_DUMP"
+        summary = (
+            f"Freefall/Breakdown ({freefall_reasons[0]})"
+            if freefall_reasons
+            else f"Freefall di bawah VWAP 5m ({vwap_dev_pct:+.1f}%)."
+        )
+    elif blowoff_wick_veto or vol_exhaustion_top:
+        regime = "EXHAUSTION_TOP"
         summary = f"Pucuk blow-off/exhaustion (wick {max_recent_wick_pct:.0f}%, vol/peak {recent_to_peak_ratio * 100:.0f}%)."
     elif freefall_veto or structure_broken:
         regime = "BREAKDOWN_DUMP"

@@ -1463,3 +1463,126 @@ def test_v51_early_launch_11m_detected_with_proportional_volume() -> None:
     assert audit.total_score >= 82
 
 
+def test_v52_cavebaby_shooting_star_post_dump_vetoed_while_kibo_1258_passes() -> None:
+    """v5.2 Forensik: CaveBaby (13:10 WIB, Shooting Star 61% usai dump -19.2%) WAJIB VETO, sedangkan Kibo (12:58 WIB) WAJIB LOLOS!"""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.016"},
+        {"outAmount": "952000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+
+    # --- KASUS A: CaveBaby (BZUYxH...L5pump) jam 13:05–13:10 WIB (tepat sebelum crash -61% -> rug $1.7K!) ---
+    # #06 merah besar -19.2% ($74.9K -> $60.5K), lalu #07 Shooting Star hijau tipis +4.4% dengan wick atas 61% (W/B 6.4x) & Lower-Low!
+    cavebaby_pair = _make_pair(
+        mint="BZUYxHMqLXCZ5evWoBuagMfpeYtPSXzr8kHvqqL5pump",
+        pair_address="CM9YBuuXKFXaLxsKArzS5AybxLfZ2c7zjmS8YAPuFmFs",
+        symbol="CaveBaby",
+        name="Caveman Baby",
+        market_cap=63_200.0,
+        liquidity_usd=21_000.0,
+        vol_m5=30_100.0,
+        vol_h1=169_300.0,
+        vol_h24=169_300.0,
+        buys_m5=620,
+        sells_m5=430,  # 59% buy, $28.7/tx micro-bundler
+        buys_h1=3_500,
+        sells_h1=2_400,
+        buys_h24=3_500,
+        sells_h24=2_400,
+        price_change_m5=4.4,
+        price_change_h1=104.0,
+        price_change_h24=104.0,
+        pair_created_at_ms=now_ms - 33 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    cavebaby_candles_5m = [
+        [1, 0.0000309, 0.0000339, 0.0000284, 0.0000321, 1_300],
+        [2, 0.0000321, 0.0000429, 0.0000307, 0.0000385, 17_100],
+        [3, 0.0000385, 0.0000533, 0.0000333, 0.0000475, 51_100],
+        [4, 0.0000475, 0.0000724, 0.0000466, 0.0000591, 27_200],
+        [5, 0.0000591, 0.0000806, 0.0000436, 0.0000749, 25_000],  # Peak #1 $80.6K
+        [6, 0.0000749, 0.0000790, 0.0000536, 0.0000605, 17_500],  # Dump merah -19.2%!
+        [7, 0.0000605, 0.0000804, 0.0000522, 0.0000632, 30_100],  # Shooting Star Double-Top: wick 61%, W/B 6.4x!
+    ]
+    at_cb = evaluate_anti_top(cavebaby_pair, cfg, now_ms=now_ms)
+    st_cb = evaluate_candle_structure(cavebaby_pair, at_cb, cavebaby_candles_5m, [], cfg)
+    assert not st_cb.passed, "CaveBaby Shooting-Star Post-Dump WAJIB DITOLAK!"
+    assert not st_cb.wait_dip_only  # HARD VETO!
+    assert st_cb.regime == "EXHAUSTION_TOP"
+    assert any(c.id == "blowoff_wick_guard" and not c.passed for c in st_cb.checks)
+
+    # --- KASUS B: Kibo / キボウ (7XSYaJ...pump) jam 12:58 WIB (Alert masuk lalu terbang ribuan persen!) ---
+    kibo_pair = _make_pair(
+        mint="7XSYaJygcuNe6Q3kPvwsJpg4ZrFL1AEUFb8kCuzppump",
+        pair_address="HJ4AFisW1oo8HVmyXL2QjjnAv4Y25NThse2LcpCreqtu",
+        symbol="Kibo",
+        name="キボウ",
+        market_cap=49_200.0,
+        liquidity_usd=16_500.0,
+        vol_m5=21_800.0,
+        vol_h1=220_100.0,
+        vol_h24=220_100.0,
+        buys_m5=195,
+        sells_m5=135,  # 59.1% buy, $66/tx organik
+        buys_h1=1_850,
+        sells_h1=1_350,  # 57.8% buy
+        buys_h24=1_850,
+        sells_h24=1_350,
+        price_change_m5=10.1,
+        price_change_h1=51.9,
+        price_change_h24=51.9,
+        pool_count=2,
+        is_boosted=False,
+        has_socials=True,
+        social_count=1,
+        has_image=True,
+        pair_created_at_ms=now_ms - 27 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    kibo_rc = _clean_rugcheck()
+    kibo_rc["score_normalised"] = 1
+    kibo_rc["totalHolders"] = 680  # $72/holder!
+    kibo_rc["markets"] = [
+        {
+            "marketType": "pump_fun_amm",
+            "pubkey": "HJ4AFisW1oo8HVmyXL2QjjnAv4Y25NThse2LcpCreqtu",
+            "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 16_500},
+        }
+    ]
+    kibo_rc["topHolders"] = [
+        {"owner": "HJ4AFisW1oo8HVmyXL2QjjnAv4Y25NThse2LcpCreqtu", "pct": 11.65},
+        {"owner": "4LZoNAug111111111111111111111111111111111111", "pct": 3.39},
+        {"owner": "9bGowR83111111111111111111111111111111111111", "pct": 1.81},
+        {"owner": "GrnnUMHp111111111111111111111111111111111111", "pct": 1.70},
+        {"owner": "21X9Uukb111111111111111111111111111111111111", "pct": 1.62},
+        {"owner": "73R2CY8T111111111111111111111111111111111111", "pct": 1.58},
+    ]
+    # Data candle 5m asli Kibo tepat pada jam 12:58 WIB (3 candle hijau beruntun, wick hanya 7%, Higher Low kuat!)
+    kibo_candles_5m_1258 = [
+        [1, 0.0000324, 0.0000579, 0.0000249, 0.0000495, 66_700],
+        [2, 0.0000495, 0.0000606, 0.0000085, 0.0000185, 73_900],
+        [3, 0.0000185, 0.0000327, 0.0000162, 0.0000286, 21_300],
+        [4, 0.0000286, 0.0000378, 0.0000155, 0.0000321, 27_100],
+        [5, 0.0000321, 0.0000590, 0.0000256, 0.0000480, 21_800],  # Hijau +49.7%, wick 33%
+        [6, 0.0000480, 0.0000498, 0.0000412, 0.0000492, 9_300],   # 12:58 WIB: Hammer hijau, wick 7%, Higher Low!
+    ]
+    sec_k = evaluate_security(kibo_pair, kibo_rc, now_ms=now_ms)
+    at_k = evaluate_anti_top(kibo_pair, cfg, now_ms=now_ms)
+    st_k = evaluate_candle_structure(kibo_pair, at_k, kibo_candles_5m_1258, [], cfg)
+    audit_k = score_and_finalize(kibo_pair, sec_k, at_k, exec_ok, cfg, structure=st_k)
+
+    assert sec_k.passed, f"Kibo L1 failed: {[c.detail for c in sec_k.checks if not c.passed]}"
+    assert at_k.passed, f"Kibo L2A failed: {[c.detail for c in at_k.checks if not c.passed]}"
+    assert st_k.passed, f"Kibo L2B failed: {[c.detail for c in st_k.checks if not c.passed]}"
+    assert audit_k.verdict == "ENTRY_READY"
+    assert audit_k.total_score >= 82
+
+
+

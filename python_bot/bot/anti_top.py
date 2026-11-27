@@ -202,13 +202,14 @@ def evaluate_anti_top(
     effective_max_h1 = cfg.max_h1_change_pct if is_proven_runner else cfg.max_fresh_h1_change_pct
     effective_max_m5 = 18.0 if is_corridor_d else cfg.max_m5_change_pct
 
-    # v5 Anti-Falling-Knife:
+    # v5.2 Anti-Falling-Knife:
     # - Koin biasa: WAJIB 5m >= 0.0% & 1h >= -2.0% (dilarang beli candle merah yang mulai turun!)
-    # - Hyper-Viral / Viral Pullback aktif (Vol5m >= $25K & Buy5m >= 52% & Buy1h >= 53%): toleransi ringan hingga -1.5% 5m
+    # - Hyper-Viral / Viral Pullback aktif (Vol5m >= $25K, Vol1h >= $250K, Buy5m >= 52% & Buy1h >= 53%): toleransi ringan hingga -1.5% 5m
     # - Koin Harian (>= 20j): wajib 5m >= +1.0% & 1h >= -4.0% (konfirmasi bangun hijau!)
     viral_mild_pullback_allowed = (
         is_viral_velocity
         and pair.vol_m5 >= 25_000.0
+        and pair.vol_h1 >= 250_000.0
         and buy_ratio_5m >= 52.0
         and buy_ratio_1h >= 53.0
     )
