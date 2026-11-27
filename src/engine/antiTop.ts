@@ -194,9 +194,21 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     waitReasons.push(`Terlalu baru (${Math.round(ageMinutes)}m < 10m) — tunggu lolos dump sniper awal`);
   }
 
-  // 3. Anti-Parabolic Cap & Anti-Freefall Floor (v5: Stop buying falling knives!)
+  // 3. Anti-Parabolic Cap & Anti-Freefall Floor (v5.3: Early Corridor A Wave +185% 1h + Stop buying falling knives!)
   const isProvenRunner = ageMinutes >= 120 && totalTx24h >= 1_200;
-  const effectiveMaxH1 = isProvenRunner ? cfg.maxH1ChangePct : Math.min(cfg.maxH1ChangePct, 115);
+  const isEarlyCorridorAWave =
+    ageMinutes < 30 &&
+    spotMc <= 92_000 &&
+    volM5 >= 12_000 &&
+    turnoverH1Ratio >= 0.9 &&
+    buyRatio5mPctEarly >= 54.0 &&
+    buyRatio1hPctEarly >= 54.0 &&
+    !isBoosted;
+  const effectiveMaxH1 = isProvenRunner
+    ? cfg.maxH1ChangePct
+    : isEarlyCorridorAWave
+    ? 185
+    : Math.min(cfg.maxH1ChangePct, 115);
   const effectiveMaxM5 = isCorridorDViralBase ? 18.0 : cfg.maxM5ChangePct;
   const viralMildPullbackAllowed =
     isViralVelocity &&

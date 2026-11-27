@@ -251,11 +251,11 @@ async def _fetch_gecko_staggered(
 
 async def discover_solana_candidates(
     client: httpx.AsyncClient,
-    max_candidates: int = 80,
+    max_candidates: int = 100,
     watchlist_mints: Optional[list[str]] = None,
 ) -> tuple[list[PairSnapshot], list[str]]:
     """
-    Kumpulkan kandidat 100% ORGANIK dari 10 sumber utama + Watchlist Auto-Rescan (v5: ZERO Paid-Boost Spam!):
+    Kumpulkan kandidat 100% ORGANIK dari 10 sumber utama + Watchlist Auto-Rescan (v5.3: ZERO Paid-Boost Spam!):
       - Watchlist Auto-Rescan: koin berkualitas yang sebelumnya WAIT_DIP dipantau ulang hingga 2 jam
       - Organik Intraday & Harian: GeckoTerminal 5m (p1 & p2), 1h (p1 & p2), 6h
       - Multi-Pool & Komunitas Awal: DexScreener PumpSwap, Meteora, Raydium, CTO, Token Profiles (non-boosted)
@@ -316,29 +316,32 @@ async def discover_solana_candidates(
                 if str(p.get("chainId") or "").lower() == "solana":
                     add_mint(str((p.get("baseToken") or {}).get("address") or ""), key)
         elif key in {"dex_community_takeovers", "dex_token_profiles"} and isinstance(payload, list):
-            for item in payload[:25]:
+            sol_seen = 0
+            for item in payload:
                 if str(item.get("chainId") or "").lower() == "solana":
                     add_mint(str(item.get("tokenAddress") or ""), key)
+                    sol_seen += 1
+                    if sol_seen >= 20:
+                        break
         after = sum(1 for s in sources_map.values() if key in s)
         notes.append(f"{key}:{after - before}")
 
-    # Prioritaskan Watchlist Rescan + multi-feed ORGANIK (Gecko 5m/1h/6h, PumpSwap, Meteora, Raydium, CTO, Profiles)
+    # Prioritaskan Watchlist Rescan + multi-feed ORGANIK + profil/CTO baru agar koin awal seperti VAULT tidak terbuang oleh kuota Gecko p2!
     def _mint_priority(m: str) -> tuple[int, int, int]:
         srcs = sources_map[m]
         wl_bonus = 1 if "watchlist_rescan" in srcs else 0
         organic_cnt = sum(1 for s in srcs if s in ORGANIC_FEED_SOURCES)
-        gecko_bonus = (
+        primary_early_bonus = (
             1
             if (
                 "gecko_trending_5m" in srcs
-                or "gecko_trending_5m_p2" in srcs
                 or "gecko_trending_1h" in srcs
-                or "gecko_trending_1h_p2" in srcs
-                or "gecko_trending_6h" in srcs
+                or "dex_token_profiles" in srcs
+                or "dex_community_takeovers" in srcs
             )
             else 0
         )
-        return (wl_bonus, organic_cnt + gecko_bonus, len(srcs))
+        return (wl_bonus, organic_cnt + primary_early_bonus, len(srcs))
 
     ranked_mints = sorted(sources_map.keys(), key=_mint_priority, reverse=True)[
         :max_candidates

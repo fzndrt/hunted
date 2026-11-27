@@ -203,11 +203,25 @@ def _evaluate_intraday_ohlcv(
         and (anti_top.buy_ratio_5m_pct >= 52.0)
         and (anti_top.buy_ratio_1h_pct >= 52.0)
     )
+    # v5.3 Bullish Engulfing Wick Invalidation: jika candle terbaru HIJAU kuat (>= +8%), menelan penuh body candle sebelumnya,
+    # dan candle terbaru sendiri bersih (wick < 30%, W/B < 1.5x) usai shakeout ringan (prev > -10%),
+    # maka wick lama dari candle sebelumnya (-2) sudah terserap (kasus VAULT #08) — tetap memblokir CaveBaby #07!
+    prev_wick_engulfed = (
+        latest_c > max(prev_o, prev_c)
+        and latest_body_pct >= 8.0
+        and latest_upper_wick_pct < 30.0
+        and latest_wick_to_body < 1.5
+        and prev_body_pct > -10.0
+        and drawdown_from_peak_pct <= 15.0
+    )
+    effective_recent_wick_pct = latest_upper_wick_pct if prev_wick_engulfed else max_recent_wick_pct
+    effective_red_wick_pct = 0.0 if prev_wick_engulfed else max_red_wick_pct
+
     wick_veto_hit = (
-        (max_red_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
-        or (max_recent_wick_pct >= 68.0 and drawdown_from_peak_pct >= 12.0)
+        (effective_red_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
+        or (effective_recent_wick_pct >= 68.0 and drawdown_from_peak_pct >= 12.0)
         if is_viral_green_absorption
-        else (max_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
+        else (effective_recent_wick_pct >= 48.0 and drawdown_from_peak_pct >= 10.0)
     )
     # v5.2 Shooting-Star Rejection: jarum penolakan atas raksasa (>=55%) dengan rasio wick:body >=4.5x di area penurunan >=12%
     shooting_star_rejection = (

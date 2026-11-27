@@ -197,9 +197,22 @@ def evaluate_anti_top(
         )
     )
 
-    # 3. Parabolic Cap & Anti-Falling-Knife Floor (v5: Hentikan beli koin yang sedang merah/jatuh bebas!)
+    # 3. Parabolic Cap & Anti-Falling-Knife Floor (v5.3: Tangkap Early Wave Koridor A +185% 1h tanpa meloloskan pisau jatuh!)
     is_proven_runner = age_minutes >= 120.0 and tx_24h >= 1_200
-    effective_max_h1 = cfg.max_h1_change_pct if is_proven_runner else cfg.max_fresh_h1_change_pct
+    is_early_corridor_a_wave = (
+        age_minutes < 30.0
+        and spot_mc <= 92_000.0
+        and pair.vol_m5 >= 12_000.0
+        and turnover_h1_ratio >= 0.90
+        and buy_ratio_5m >= 54.0
+        and buy_ratio_1h >= 54.0
+        and (not pair.is_boosted)
+    )
+    effective_max_h1 = (
+        cfg.max_h1_change_pct
+        if is_proven_runner
+        else (185.0 if is_early_corridor_a_wave else cfg.max_fresh_h1_change_pct)
+    )
     effective_max_m5 = 18.0 if is_corridor_d else cfg.max_m5_change_pct
 
     # v5.2 Anti-Falling-Knife:

@@ -1585,4 +1585,129 @@ def test_v52_cavebaby_shooting_star_post_dump_vetoed_while_kibo_1258_passes() ->
     assert audit_k.total_score >= 82
 
 
+def test_v53_vault_caught_early_at_70k_and_engulfing_126k() -> None:
+    """v5.3 Forensik: VAULT (4tqzkS...DZpump) WAJIB tertangkap awal di $70K (#04, 17m) & di #08 ($126K Engulfing) tanpa meloloskan CaveBaby."""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.015"},
+        {"outAmount": "955000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+    vault_rc = _clean_rugcheck()
+    vault_rc["score_normalised"] = 1
+    vault_rc["totalHolders"] = 1_570
+    vault_rc["markets"] = [
+        {
+            "marketType": "pump_fun_amm",
+            "pubkey": "GKoXmesnHAitjcfWhESsrGub2uq2CtpPGunhT6XcrVw",
+            "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 22_865},
+        }
+    ]
+    vault_rc["topHolders"] = [
+        {"owner": "GKoXmesnHAitjcfWhESsrGub2uq2CtpPGunhT6XcrVw", "pct": 11.48},
+        {"owner": "AWEZL5HG111111111111111111111111111111111111", "pct": 3.91},
+        {"owner": "AacB5VFn111111111111111111111111111111111111", "pct": 1.57},
+        {"owner": "DT8u94sm111111111111111111111111111111111111", "pct": 1.54},
+        {"owner": "3dTeQyAM111111111111111111111111111111111111", "pct": 1.22},
+        {"owner": "HbTVA7t511111111111111111111111111111111111", "pct": 1.14},
+    ]
+    vault_candles = [
+        [1, 28.8e-6, 36.3e-6, 26.3e-6, 34.4e-6, 5_500],
+        [2, 34.4e-6, 75.8e-6, 33.9e-6, 60.1e-6, 39_600],
+        [3, 60.1e-6, 67.1e-6, 41.3e-6, 59.1e-6, 17_600],
+        [4, 59.1e-6, 74.0e-6, 49.2e-6, 70.0e-6, 14_600],  # Early Wave #04: MC $70K, +18.5%, wick 16%!
+        [5, 70.0e-6, 77.1e-6, 55.3e-6, 75.5e-6, 9_200],
+        [6, 75.5e-6, 127.8e-6, 72.8e-6, 109.5e-6, 26_000],
+        [7, 109.5e-6, 141.8e-6, 93.5e-6, 106.2e-6, 43_100],  # Shakeout wick 67%, -3.0%
+        [8, 106.2e-6, 135.1e-6, 91.4e-6, 126.2e-6, 21_300],  # Bullish Engulfing #08: +18.9%, wick 20%!
+    ]
+
+    # --- KASUS A: VAULT Fase Awal #04 (18:34 WIB, usia 17m, MC $70K, 1h +143%) ---
+    vault_early = _make_pair(
+        mint="4tqzkSWA9tiWYhzYpSt81We3cVNkrEbkD1tzjFDZpump",
+        pair_address="GKoXmesnHAitjcfWhESsrGub2uq2CtpPGunhT6XcrVw",
+        symbol="VAULT",
+        name="Vault",
+        market_cap=70_000.0,
+        liquidity_usd=18_500.0,
+        vol_m5=14_600.0,
+        vol_h1=77_300.0,
+        vol_h24=77_300.0,
+        buys_m5=260,
+        sells_m5=190,
+        buys_h1=1_500,
+        sells_h1=1_050,
+        buys_h24=1_500,
+        sells_h24=1_050,
+        price_change_m5=18.5,
+        price_change_h1=143.0,
+        price_change_h24=143.0,
+        pool_count=3,
+        is_boosted=False,
+        has_socials=True,
+        social_count=1,
+        has_website=True,
+        has_image=True,
+        pair_created_at_ms=now_ms - 17 * 60_000,
+        feed_sources=("dex_token_profiles",),
+    )
+    rc_early = dict(vault_rc)
+    rc_early["totalHolders"] = 820
+    sec_e = evaluate_security(vault_early, rc_early, now_ms=now_ms)
+    at_e = evaluate_anti_top(vault_early, cfg, now_ms=now_ms)
+    st_e = evaluate_candle_structure(vault_early, at_e, vault_candles[:4], [], cfg)
+    audit_e = score_and_finalize(vault_early, sec_e, at_e, exec_ok, cfg, structure=st_e)
+    assert sec_e.passed, f"VAULT early L1 failed: {[c.detail for c in sec_e.checks if not c.passed]}"
+    assert at_e.passed, f"VAULT early L2A failed: {[c.detail for c in at_e.checks if not c.passed]}"
+    assert st_e.passed, f"VAULT early L2B failed: {[c.detail for c in st_e.checks if not c.passed]}"
+    assert audit_e.verdict == "ENTRY_READY"
+    assert audit_e.total_score >= 82
+
+    # --- KASUS B: VAULT Engulfing Breakout #08 (18:54 WIB, usia 37m, MC $127.5K) ---
+    vault_engulf = _make_pair(
+        mint="4tqzkSWA9tiWYhzYpSt81We3cVNkrEbkD1tzjFDZpump",
+        pair_address="GKoXmesnHAitjcfWhESsrGub2uq2CtpPGunhT6XcrVw",
+        symbol="VAULT",
+        name="Vault",
+        market_cap=127_512.0,
+        liquidity_usd=24_772.0,
+        vol_m5=30_783.0,
+        vol_h1=178_290.0,
+        vol_h24=178_290.0,
+        buys_m5=567,
+        sells_m5=438,
+        buys_h1=3_283,
+        sells_h1=2_233,
+        buys_h24=3_283,
+        sells_h24=2_233,
+        price_change_m5=8.55,
+        price_change_h1=344.0,
+        price_change_h24=344.0,
+        pool_count=5,
+        is_boosted=False,
+        has_socials=True,
+        social_count=1,
+        has_website=True,
+        has_image=True,
+        pair_created_at_ms=now_ms - 37 * 60_000,
+        feed_sources=("dex_token_profiles",),
+    )
+    sec_8 = evaluate_security(vault_engulf, vault_rc, now_ms=now_ms)
+    at_8 = evaluate_anti_top(vault_engulf, cfg, now_ms=now_ms)
+    st_8 = evaluate_candle_structure(vault_engulf, at_8, vault_candles, [], cfg)
+    audit_8 = score_and_finalize(vault_engulf, sec_8, at_8, exec_ok, cfg, structure=st_8)
+    assert sec_8.passed
+    assert at_8.passed
+    assert st_8.passed, f"VAULT #08 engulfing L2B failed: {[c.detail for c in st_8.checks if not c.passed]}"
+    assert audit_8.verdict == "ENTRY_READY"
+    assert audit_8.total_score >= 85
+
+
+
 

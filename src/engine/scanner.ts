@@ -282,27 +282,28 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   }
 
   for (const [arr, label, weight] of [
-    [dsCto, 'DexScreener CTO', 2],
-    [dsProfiles, 'DexScreener Token Profiles', 2],
+    [dsCto, 'DexScreener CTO', 3],
+    [dsProfiles, 'DexScreener Token Profiles', 3],
   ] as const) {
     if (!Array.isArray(arr)) continue;
     let added = 0;
-    for (const item of arr.slice(0, 25)) {
+    for (const item of arr) {
       if (String(item.chainId ?? '').toLowerCase() !== 'solana') continue;
       const mint = String(item.tokenAddress ?? '').trim();
       if (isValidSolanaMint(mint) && !VERIFIED_HARD_QUOTE_MINTS[mint]) {
         recordMint(mint, weight);
         added++;
+        if (added >= 20) break;
       }
     }
     feedNotes.push(`${label}: ${added} mints`);
   }
 
-  // 2. Batch-fetch live market data prioritizing organic trending mints first (max 75 candidates)
+  // 2. Batch-fetch live market data prioritizing organic trending & fresh profile mints (max 100 candidates)
   const mintList = Array.from(organicScoreByMint.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([m]) => m)
-    .slice(0, 75);
+    .slice(0, 100);
   const chunks: string[][] = [];
   for (let i = 0; i < mintList.length; i += 30) {
     chunks.push(mintList.slice(i, i + 30));
