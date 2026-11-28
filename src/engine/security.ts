@@ -90,7 +90,8 @@ function asNum(v: unknown, fallback = 0): number {
 export function evaluateSecurityLayer(
   pair: DexPairLike,
   rug: RugCheckReportLike | null,
-  minHoldersRequired: number
+  minHoldersRequired: number,
+  isVeteranSwing = false
 ): SecurityAuditResult {
   const checks: GateCheck[] = [];
   const vetoReasons: string[] = [];
@@ -243,7 +244,8 @@ export function evaluateSecurityLayer(
   const supplyRaw = asNum(rug.token?.supply, 0);
   const creatorBalRaw = asNum(rug.creatorBalance, 0);
   const creatorBalancePct = supplyRaw > 0 ? (creatorBalRaw / supplyRaw) * 100 : 0;
-  const creatorOk = creatorBalancePct <= 2.5;
+  const maxCreatorPct = isVeteranSwing ? 1.0 : 2.5;
+  const creatorOk = creatorBalancePct <= maxCreatorPct;
 
   checks.push({
     id: 'dev_balance',
@@ -252,12 +254,12 @@ export function evaluateSecurityLayer(
     passed: creatorOk,
     severity: 'HARD_VETO',
     actual: `${creatorBalancePct.toFixed(2)}%`,
-    threshold: '<= 2.50%',
+    threshold: `<= ${maxCreatorPct.toFixed(2)}%`,
     detail: creatorOk
       ? 'Dompet pembuat kontrak memegang porsi kecil atau sudah nol.'
-      : `Dev masih memegang ${creatorBalancePct.toFixed(2)}% suplai — rawan dev dump.`,
+      : `Dev masih memegang ${creatorBalancePct.toFixed(2)}% suplai (> ${maxCreatorPct}%) — rawan dev dump.`,
   });
-  if (!creatorOk) vetoReasons.push(`Dev masih memegang ${creatorBalancePct.toFixed(2)}% (> 2.5%)`);
+  if (!creatorOk) vetoReasons.push(`Dev masih memegang ${creatorBalancePct.toFixed(2)}% (> ${maxCreatorPct}%)`);
 
   // 5. Vault Separation, LP Lock & True Hard-Quote Backing Ratio
   const marketVaults = new Set<string>(KNOWN_PROTOCOL_AUTHORITIES);
@@ -331,8 +333,9 @@ export function evaluateSecurityLayer(
     }
   }
 
+  const minLockedUsdReq = isVeteranSwing ? 80_000 : 18_000;
   const lpLockOk =
-    lpLockedPct === null ? true : lpLockedPct >= 80 || totalLockedUsd >= 18_000;
+    lpLockedPct === null ? true : lpLockedPct >= 80 || totalLockedUsd >= minLockedUsdReq;
   const hardReserveOk = hardQuoteReserveRatioPct === null ? hardQuoteVerified : hardQuoteReserveRatioPct >= 22;
 
   checks.push({
@@ -411,20 +414,24 @@ export function evaluateSecurityLayer(
     top10PurePct <= 28.0 &&
     totalHolders >= 1000;
 
-  const maxSingleAllowed = cleanViralPareto
+  const maxSingleAllowed = isVeteranSwing
+    ? 3.5
+    : cleanViralPareto
     ? 11.0
     : totalHolders >= 2000 && insiderHoldersCount === 0 && (rugScoreVal === null || rugScoreVal <= 15)
     ? 8.0
     : 6.5;
-  const top10Ceiling =
-    outsidePoolPct >= 80 && totalHolders >= 1000 && insiderHoldersCount === 0 && maxSinglePurePct <= maxSingleAllowed
-      ? Math.min(30.0, outsidePoolPct * 0.32)
-      : 28.0;
+  const top10Ceiling = isVeteranSwing
+    ? 18.0
+    : outsidePoolPct >= 80 && totalHolders >= 1000 && insiderHoldersCount === 0 && maxSinglePurePct <= maxSingleAllowed
+    ? Math.min(30.0, outsidePoolPct * 0.32)
+    : 28.0;
 
   const spotMcVal = asNum(pair.marketCap) || asNum(pair.fdv);
   const mcPerHolderUsd = totalHolders > 0 && spotMcVal > 0 ? Number((spotMcVal / totalHolders).toFixed(1)) : 0;
   const isDailyToken = ageMin >= 20 * 60;
-  const maxMcPerHolder = isDailyToken ? 280 : spotMcVal >= 110_000 ? 240 : 260;
+  const maxMcPerHolder = isVeteranSwing ? 650 : isDailyToken ? 280 : spotMcVal >= 110_000 ? 240 : 260;
+  const effectiveMinHolders = isVeteranSwing ? Math.max(2_500, minHoldersRequired) : minHoldersRequired;
   const holderDensityOk = totalHolders === 0 || mcPerHolderUsd <= maxMcPerHolder;
 
   const toxicRisks = Array.isArray(rug.risks)
@@ -443,8 +450,10 @@ export function evaluateSecurityLayer(
         })
         .map((r) => String(r?.name ?? 'risk'))
     : [];
-  const badRcScore = rugScoreVal !== null && rugScoreVal > 35;
-  const rugIntegrityOk = toxicRisks.length === 0 && !badRcScore;
+  const maxRcScore = isVeteranSwing ? 5 : 35;
+  const badRcScore = rugScoreVal !== null && rugScoreVal > maxRcScore;
+  const veteranRisksFail = isVeteranSwing && warnOrDangerRisks > 0;
+  const rugIntegrityOk = toxicRisks.length === 0 && !badRcScore && !veteranRisksFail;
 
   checks.push({
     id: 'rugcheck_integrity',
@@ -454,23 +463,26 @@ export function evaluateSecurityLayer(
     severity: 'HARD_VETO',
     actual: rugIntegrityOk
       ? `Score ${rugScoreVal ?? 'N/A'} · Bersih`
-      : `Score ${rugScoreVal ?? 'N/A'} · ${toxicRisks.join(', ') || 'Skor > 35'}`,
-    threshold: 'RC Score <= 35 & bebas High Holder Correlation / Copycat / Hollow MC',
+      : `Score ${rugScoreVal ?? 'N/A'} · ${toxicRisks.join(', ') || (veteranRisksFail ? `${warnOrDangerRisks} risk` : `Skor > ${maxRcScore}`)}`,
+    threshold: isVeteranSwing
+      ? 'Veteran Swing: RC Score <= 5 & 0 warning/danger risks'
+      : 'RC Score <= 35 & bebas High Holder Correlation / Copycat / Hollow MC',
     detail: rugIntegrityOk
       ? 'Skor RugCheck sehat tanpa sinyal korelasi dompet bundler/cabal.'
-      : `Ditolak: Risiko on-chain tinggi (${toxicRisks.join(', ') || `RC score ${rugScoreVal} > 35`}).`,
+      : `Ditolak: Risiko on-chain tinggi (${toxicRisks.join(', ') || `RC score ${rugScoreVal} > ${maxRcScore} / ${warnOrDangerRisks} risk`}).`,
   });
   if (!rugIntegrityOk) {
-    vetoReasons.push(`Risiko RugCheck tinggi (${toxicRisks[0] ?? `score ${rugScoreVal} > 35`})`);
+    vetoReasons.push(`Risiko RugCheck tinggi (${toxicRisks[0] ?? `score ${rugScoreVal} > ${maxRcScore}`})`);
   }
 
   const isNanoSwarm =
-    (outsidePoolPct >= 65 &&
+    !isVeteranSwing &&
+    ((outsidePoolPct >= 65 &&
       (top10PurePct < 5.2 || maxSinglePurePct < 0.65 || (outsidePoolPct >= 70 && rank5PurePct < 0.45))) ||
-    (totalHolders >= 500 && pureHolders.length >= 5 && top10PurePct < 3.5);
+      (totalHolders >= 500 && pureHolders.length >= 5 && top10PurePct < 3.5));
   const isCabalConcentrated =
     top10PurePct > top10Ceiling || maxSinglePurePct > maxSingleAllowed || insiderHoldersCount >= 3;
-  const holdersEnough = totalHolders === 0 || (totalHolders >= minHoldersRequired && holderDensityOk);
+  const holdersEnough = totalHolders === 0 || (totalHolders >= effectiveMinHolders && holderDensityOk);
 
   // Detect identical twin-wallet split clusters (>= 4 wallets within 0.015% of each other)
   let maxTwinCluster = 1;
@@ -494,7 +506,7 @@ export function evaluateSecurityLayer(
     passed: paretoOk,
     severity: 'HARD_VETO',
     actual: `Top10: ${top10PurePct.toFixed(1)}% · Max: ${maxSinglePurePct.toFixed(2)}% · ${totalHolders.toLocaleString()}H ($${Math.round(mcPerHolderUsd)}/H)`,
-    threshold: `Top10 3.5%–${top10Ceiling.toFixed(1)}% · >= ${minHoldersRequired}H · <= $${maxMcPerHolder}/H`,
+    threshold: `Top10 3.5%–${top10Ceiling.toFixed(1)}% · >= ${effectiveMinHolders}H · <= $${maxMcPerHolder}/H`,
     detail: isNanoSwarm
       ? 'Pola Nano-Swarm terdeteksi: suplai dipecah ke ratusan/ribuan dompet bot mikro terkoordinasi.'
       : isCabalConcentrated
@@ -504,7 +516,7 @@ export function evaluateSecurityLayer(
       : !holderDensityOk
       ? `Hollow Shell / Gelembung Cabal: MC/Holder terlalu mahal ($${Math.round(mcPerHolderUsd)}/H > $${maxMcPerHolder}/H) — rawan terjun bebas.`
       : !holdersEnough
-      ? `Jumlah holder terlalu sedikit (${totalHolders} < ${minHoldersRequired}).`
+      ? `Jumlah holder terlalu sedikit (${totalHolders} < ${effectiveMinHolders}).`
       : cleanViralPareto && maxSinglePurePct > 6.5
       ? `Lolos Smart Viral Pareto (Score ${rugScoreVal}, 0 risk, 0% dev, ${totalHolders.toLocaleString()}H).`
       : 'Kurva distribusi holder & densitas MC/holder sehat mengikuti hukum Pareto organik.',
@@ -516,8 +528,8 @@ export function evaluateSecurityLayer(
   }
   if (hasTwinCabal) vetoReasons.push(`Kluster ${maxTwinCluster} dompet kembar bundler terdeteksi`);
   if (!holderDensityOk) vetoReasons.push(`Hollow Shell: MC/Holder $${Math.round(mcPerHolderUsd)}/H > $${maxMcPerHolder}/H`);
-  if (totalHolders > 0 && totalHolders < minHoldersRequired) {
-    vetoReasons.push(`Holders terlalu minim (${totalHolders} < ${minHoldersRequired})`);
+  if (totalHolders > 0 && totalHolders < effectiveMinHolders) {
+    vetoReasons.push(`Holders terlalu minim (${totalHolders} < ${effectiveMinHolders})`);
   }
 
   return {

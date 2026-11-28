@@ -44,6 +44,7 @@ def evaluate_security(
     now_ms: Optional[int] = None,
     require_hyper_viral_holders: bool = False,
     require_steady_climber_holders: bool = False,
+    require_veteran_swing: bool = False,
 ) -> SecurityResult:
     checks: list[GateCheck] = []
 
@@ -224,7 +225,8 @@ def evaluate_security(
                 dev_pct = max(dev_pct, pct)
         non_protocol_holders.append(pct)
 
-    dev_ok = dev_pct <= 2.5
+    max_dev_allowed = 1.0 if require_veteran_swing else 2.5
+    dev_ok = dev_pct <= max_dev_allowed
     checks.append(
         GateCheck(
             id="dev_supply",
@@ -233,26 +235,27 @@ def evaluate_security(
             passed=dev_ok,
             severity="PASS" if dev_ok else "VETO",
             actual=f"{dev_pct:.2f}%",
-            threshold="<= 2.50%",
+            threshold=f"<= {max_dev_allowed:.2f}%",
             detail=(
                 f"Supply dev terkendali ({dev_pct:.2f}%)."
                 if dev_ok
-                else f"DITOLAK: Dev/insider memegang {dev_pct:.2f}% (> 2.50%, rawan dump)."
+                else f"DITOLAK: Dev/insider memegang {dev_pct:.2f}% (> {max_dev_allowed:.2f}%, rawan dump)."
             ),
         )
     )
 
-    # 7. LP Lock >= 80% OR >= $18K locked pool
-    lp_ok = best_lp_lock_pct >= 80.0 or best_lp_lock_usd >= 18_000.0
+    # 7. LP Lock >= 80% OR >= $18K locked pool (Veteran Swing >= $80K locked pool atau >= 80% dengan LP >= $80K)
+    min_locked_usd_req = 80_000.0 if require_veteran_swing else 18_000.0
+    lp_ok = best_lp_lock_pct >= 80.0 or best_lp_lock_usd >= min_locked_usd_req
     if lp_ok:
         lp_detail = (
             f"LP terverifikasi terkunci ({best_lp_lock_pct:.1f}% / ${best_lp_lock_usd:,.0f})."
             if best_lp_lock_pct >= 80.0
-            else f"Pool AMM terkunci >= $18K (${best_lp_lock_usd:,.0f}) meski ada posisi NFT/CLMM paralel."
+            else f"Pool AMM terkunci >= ${min_locked_usd_req:,.0f} (${best_lp_lock_usd:,.0f}) meski ada posisi NFT/CLMM paralel."
         )
     elif is_meteora_nft_lp:
         lp_detail = (
-            "DITOLAK: Pool Meteora DLMM/DAMM v2 memakai NFT position tanpa bukti lock >= $18K di AMM terverifikasi."
+            f"DITOLAK: Pool Meteora DLMM/DAMM v2 memakai NFT position tanpa bukti lock >= ${min_locked_usd_req:,.0f} di AMM terverifikasi."
         )
     else:
         lp_detail = f"DITOLAK: LP terkunci hanya {best_lp_lock_pct:.1f}% (${best_lp_lock_usd:,.0f}) — rawan rugpull tarik LP."
@@ -265,7 +268,7 @@ def evaluate_security(
             passed=lp_ok,
             severity="PASS" if lp_ok else "VETO",
             actual=f"{best_lp_lock_pct:.1f}% (${best_lp_lock_usd:,.0f})",
-            threshold=">= 80% terkunci ATAU >= $18K locked pool",
+            threshold=f">= 80% terkunci ATAU >= ${min_locked_usd_req:,.0f} locked pool",
             detail=lp_detail,
         )
     )
@@ -286,9 +289,12 @@ def evaluate_security(
         age_min = 60.0
     holders_per_min = round(total_holders / age_min, 2) if total_holders > 0 else 0.0
 
-    # 8. Minimum Organic Holder Depth & Holder Density Ratio (v5.5: Anti-Hollow-Shell & Anti-Thin-PvP MC/Holder!)
+    # 8. Minimum Organic Holder Depth & Holder Density Ratio (v5.6: Track 1 Intraday + Track 2 Veteran Swing!)
     is_daily_token = age_min >= 20.0 * 60.0
-    if pair.market_cap >= 390_000.0:
+    if require_veteran_swing:
+        min_holders_req = 2_500
+        max_mc_per_holder = 650.0
+    elif pair.market_cap >= 390_000.0:
         min_holders_req = 1_800
         max_mc_per_holder = 280.0 if is_daily_token else 240.0
     elif pair.market_cap >= 210_000.0:
@@ -338,8 +344,10 @@ def evaluate_security(
             )
         ):
             toxic_risk_names.append(str(r.get("name", "risk")))
-    bad_rc_score = rc_score is not None and rc_score > 35
-    rugcheck_integrity_ok = (len(toxic_risk_names) == 0) and (not bad_rc_score)
+    max_rc_allowed = 5 if require_veteran_swing else 35
+    bad_rc_score = rc_score is not None and rc_score > max_rc_allowed
+    veteran_zero_risk_ok = (not require_veteran_swing) or (warn_or_danger_risks_early == 0)
+    rugcheck_integrity_ok = (len(toxic_risk_names) == 0) and (not bad_rc_score) and veteran_zero_risk_ok
 
     checks.append(
         GateCheck(
@@ -351,13 +359,13 @@ def evaluate_security(
             actual=(
                 f"Score {rc_score if rc_score is not None else 'N/A'} · Bersih"
                 if rugcheck_integrity_ok
-                else f"Score {rc_score} · {', '.join(sorted(set(toxic_risk_names)))[:55] or 'Skor tinggi'}"
+                else f"Score {rc_score} · {', '.join(sorted(set(toxic_risk_names)))[:55] or f'{warn_or_danger_risks_early} risk / Skor > {max_rc_allowed}'}"
             ),
-            threshold="RC Score <= 35 & bebas High Holder Correlation / Copycat / Hollow MC",
+            threshold=f"RC Score <= {max_rc_allowed} & bebas High Holder Correlation / Copycat / Hollow MC",
             detail=(
                 "Skor RugCheck sehat tanpa sinyal korelasi dompet bundler/cabal."
                 if rugcheck_integrity_ok
-                else f"DITOLAK: Risiko on-chain tinggi ({', '.join(sorted(set(toxic_risk_names))) or f'RC score {rc_score} > 35'})."
+                else f"DITOLAK: Risiko on-chain tinggi ({', '.join(sorted(set(toxic_risk_names))) or f'RC score {rc_score} > {max_rc_allowed} / {warn_or_danger_risks_early} risk'})."
             ),
         )
     )
@@ -369,7 +377,7 @@ def evaluate_security(
         and (rc_score is None or rc_score <= 5)
     )
     holders_ok = (
-        ((total_holders == 0) and not require_hyper_viral_holders)
+        ((total_holders == 0) and not require_hyper_viral_holders and not require_veteran_swing)
         or (total_holders >= min_holders_req and fasttrack_clean_ok and holder_density_ok)
     )
     checks.append(
@@ -387,7 +395,11 @@ def evaluate_security(
             threshold=(
                 f">= {min_holders_req:,}H, <= ${max_mc_per_holder:.0f}/H, RC<=5 & 0 risks (Early Fast-Track 6-9m)"
                 if require_hyper_viral_holders
-                else f">= {min_holders_req:,}H & <= ${max_mc_per_holder:.0f} MC/holder"
+                else (
+                    f">= {min_holders_req:,}H & <= ${max_mc_per_holder:.0f}/H (Veteran Swing >= 7 Hari)"
+                    if require_veteran_swing
+                    else f">= {min_holders_req:,}H & <= ${max_mc_per_holder:.0f} MC/holder"
+                )
             ),
             detail=(
                 f"Basis komunitas holder padat ({total_holders:,} dompet, ${mc_per_holder_usd:,.0f}/holder, {holders_per_min:.1f}/m)."
@@ -438,16 +450,22 @@ def evaluate_security(
         and top10_pct <= 28.0
         and total_holders >= 1_000
     )
-    if clean_viral_pareto:
+    if require_veteran_swing:
+        max_top1_allowed = 3.5
+        max_top10_allowed = 18.0
+    elif clean_viral_pareto:
         max_top1_allowed = 11.0
+        max_top10_allowed = 30.0
     elif total_holders >= 2_000 and insider_count == 0 and (rc_score is not None and rc_score <= 15):
         max_top1_allowed = 8.0
+        max_top10_allowed = 30.0
     else:
         max_top1_allowed = 6.5
+        max_top10_allowed = 30.0
 
     pareto_ok = (
         (top1_pct <= max_top1_allowed)
-        and (top10_pct <= 30.0)
+        and (top10_pct <= max_top10_allowed)
         and (insider_count < 3)
         and (not is_nano_swarm)
     )
@@ -459,10 +477,10 @@ def evaluate_security(
     elif insider_count >= 3:
         pareto_status = "INSIDER_CLUSTER"
         pareto_detail = f"DITOLAK: Terdeteksi {insider_count} dompet insider di Top Holders."
-    elif top1_pct > max_top1_allowed or top10_pct > 30.0:
+    elif top1_pct > max_top1_allowed or top10_pct > max_top10_allowed:
         pareto_status = "WHALE_CONCENTRATED"
         pareto_detail = (
-            f"DITOLAK: Konsentrasi holder terlalu tinggi (Top1={top1_pct:.2f}% > {max_top1_allowed:.1f}%, Top10={top10_pct:.2f}%)."
+            f"DITOLAK: Konsentrasi holder terlalu tinggi (Top1={top1_pct:.2f}% > {max_top1_allowed:.1f}%, Top10={top10_pct:.2f}% > {max_top10_allowed:.1f}%)."
         )
     elif clean_viral_pareto and top1_pct > 6.5:
         pareto_status = "VIRAL_PARETO_CLEAN"
@@ -481,7 +499,7 @@ def evaluate_security(
             passed=pareto_ok,
             severity="PASS" if pareto_ok else "VETO",
             actual=f"Top1 {top1_pct:.2f}% · Top10 {top10_pct:.2f}%",
-            threshold=f"Top1 <= {max_top1_allowed:.1f}%, Top10 3.5%–30.0%, non-seragam",
+            threshold=f"Top1 <= {max_top1_allowed:.1f}%, Top10 3.5%–{max_top10_allowed:.1f}%, non-seragam",
             detail=pareto_detail,
         )
     )

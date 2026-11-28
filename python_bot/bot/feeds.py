@@ -220,33 +220,38 @@ async def fetch_pairs_batch(
 
 async def _fetch_gecko_staggered(
     client: httpx.AsyncClient,
-) -> tuple[Any, Any, Any, Any, Any]:
-    """Tarik GeckoTerminal 5m (p1 & p2), 1h (p1 & p2) & 6h berurutan (jeda 0.45s) untuk tangkap koin organik awal."""
+) -> tuple[Any, Any, Any, Any, Any, Any]:
+    """Tarik GeckoTerminal 5m (p1 & p2), 1h (p1 & p2), 6h & 24h berurutan (jeda 0.40s) untuk Jalur 1 Micro-Cap & Jalur 2 Veteran Swing."""
     gt_5m = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1",
     )
-    await asyncio.sleep(0.45)
+    await asyncio.sleep(0.40)
     gt_5m_p2 = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2",
     )
-    await asyncio.sleep(0.45)
+    await asyncio.sleep(0.40)
     gt_1h = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1",
     )
-    await asyncio.sleep(0.45)
+    await asyncio.sleep(0.40)
     gt_1h_p2 = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=2",
     )
-    await asyncio.sleep(0.45)
+    await asyncio.sleep(0.40)
     gt_6h = await _get_json(
         client,
         "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1",
     )
-    return gt_5m, gt_5m_p2, gt_1h, gt_1h_p2, gt_6h
+    await asyncio.sleep(0.40)
+    gt_24h = await _get_json(
+        client,
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=24h&page=1",
+    )
+    return gt_5m, gt_5m_p2, gt_1h, gt_1h_p2, gt_6h, gt_24h
 
 
 async def discover_solana_candidates(
@@ -255,10 +260,11 @@ async def discover_solana_candidates(
     watchlist_mints: Optional[list[str]] = None,
 ) -> tuple[list[PairSnapshot], list[str]]:
     """
-    Kumpulkan kandidat 100% ORGANIK dari 10 sumber utama + Watchlist Auto-Rescan (v5.3: ZERO Paid-Boost Spam!):
+    Kumpulkan kandidat 100% ORGANIK dari 11 sumber utama + Watchlist Auto-Rescan (v5.6 Dual-Track):
       - Watchlist Auto-Rescan: koin berkualitas yang sebelumnya WAIT_DIP dipantau ulang hingga 2 jam
-      - Organik Intraday & Harian: GeckoTerminal 5m (p1 & p2), 1h (p1 & p2), 6h
-      - Multi-Pool & Komunitas Awal: DexScreener PumpSwap, Meteora, Raydium, CTO, Token Profiles (non-boosted)
+      - Jalur 1 Micro-Cap & Harian: GeckoTerminal 5m (p1 & p2), 1h (p1 & p2), 6h
+      - Jalur 2 Veteran Swing ($850K–$10M, >= 7 hari): GeckoTerminal 24h + 6h + PumpSwap/Raydium/Meteora
+      - Multi-Pool & Komunitas Awal: DexScreener PumpSwap, Meteora, Raydium, CTO, Token Profiles
     """
     dex_urls = {
         "dex_pumpswap": "https://api.dexscreener.com/latest/dex/search?q=pumpswap",
@@ -272,7 +278,7 @@ async def discover_solana_candidates(
     gecko_task = _fetch_gecko_staggered(client)
     dex_tasks = [_get_json(client, dex_urls[k]) for k in dex_keys]
     gathered = await asyncio.gather(gecko_task, *dex_tasks)
-    gt_5m, gt_5m_p2, gt_1h, gt_1h_p2, gt_6h = gathered[0]
+    gt_5m, gt_5m_p2, gt_1h, gt_1h_p2, gt_6h, gt_24h = gathered[0]
     dex_responses = gathered[1:]
 
     sources_map: dict[str, set[str]] = {}
@@ -298,6 +304,7 @@ async def discover_solana_candidates(
         ("gecko_trending_1h", gt_1h),
         ("gecko_trending_1h_p2", gt_1h_p2),
         ("gecko_trending_6h", gt_6h),
+        ("gecko_trending_24h", gt_24h),
     ):
         before = sum(1 for s in sources_map.values() if key in s)
         if isinstance(payload, dict):

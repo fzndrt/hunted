@@ -1,6 +1,14 @@
 export type Verdict = 'ENTRY_READY' | 'WATCH_PULLBACK' | 'REJECTED';
 
-export type CorridorId = 'A_PRE_100K' | 'B_POST_100K' | 'C_MID_EXPANSION' | 'D_VIRAL_BASE' | 'RED_ZONE';
+export type SignalTrack = 'EARLY_MICROCAP' | 'VETERAN_SWING';
+
+export type CorridorId =
+  | 'A_PRE_100K'
+  | 'B_POST_100K'
+  | 'C_MID_EXPANSION'
+  | 'D_VIRAL_BASE'
+  | 'E_VETERAN_SWING'
+  | 'RED_ZONE';
 
 export interface ScanConfig {
   reactionDelaySec: number;
@@ -109,6 +117,8 @@ export interface AntiTopResult {
     isSteadyOrganicClimber?: boolean;
     isBoosted?: boolean;
     hasCommunityPresence?: boolean;
+    isVeteranSwing?: boolean;
+    signalTrack?: SignalTrack;
   };
 }
 
@@ -168,6 +178,7 @@ export interface AuditedToken {
     rugcheck: string;
   };
   auditedAt: number;
+  signalTrack?: SignalTrack;
 }
 
 export interface ScanSummary {

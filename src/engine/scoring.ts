@@ -35,12 +35,13 @@ export function computeScoreAndVerdict(
   const sm = security.metrics;
   const em = execution.metrics;
 
+  const isVet = Boolean(m.isVeteranSwing);
   // Pillar 1: Early Entry Headroom (0–25)
   const headroomPts = clamp((m.netHeadroomPct / 45) * 18, 0, 18);
   const earlyMcBonus =
     antiTop.corridor?.id === 'A_PRE_100K'
       ? 7
-      : antiTop.corridor?.id === 'B_POST_100K'
+      : antiTop.corridor?.id === 'B_POST_100K' || antiTop.corridor?.id === 'E_VETERAN_SWING'
       ? 5
       : antiTop.corridor?.id === 'C_MID_EXPANSION' || antiTop.corridor?.id === 'D_VIRAL_BASE'
       ? 4
@@ -49,10 +50,14 @@ export function computeScoreAndVerdict(
 
   // Pillar 2: Organic Orderflow Quality (0–25)
   const rawBsPts = clamp(((m.buySellRatioM5 - 1.0) / 1.8) * 11, 0, 11);
-  const whaleAbsorption = m.pM5 >= 2.0 && m.buySellRatioM5 >= 0.72 && m.buySellRatioM5 < 1.05;
+  const whaleAbsorption = !isVet && m.pM5 >= 2.0 && m.buySellRatioM5 >= 0.72 && m.buySellRatioM5 < 1.05;
   const bsPts = whaleAbsorption ? Math.max(rawBsPts, 7.5) : rawBsPts;
   const ticketPts = clamp((m.avgTicketM5Usd / 95) * 8, 0, 8);
-  const accelPts = m.isViralVelocity
+  const accelPts = isVet
+    ? m.volH1 >= 35_000
+      ? 6
+      : 4
+    : m.isViralVelocity
     ? 6
     : m.isPullbackContractionOk
     ? Math.max(4, clamp(((m.volAccelRatio - 0.8) / 2.2) * 6, 0, 6))
@@ -72,7 +77,19 @@ export function computeScoreAndVerdict(
         ? 2
         : 0;
     const density = sm.mcPerHolderUsd ?? 0;
-    const densityPts = density > 0 && density <= 130 ? 5 : density > 0 && density <= 210 ? 3 : density > 0 && density <= 280 ? 1 : 0;
+    const densityPts = isVet
+      ? density > 0 && density <= 500
+        ? 5
+        : density > 0 && density <= 650
+        ? 3
+        : 0
+      : density > 0 && density <= 130
+      ? 5
+      : density > 0 && density <= 210
+      ? 3
+      : density > 0 && density <= 280
+      ? 1
+      : 0;
     const holderPts = clamp((sm.totalHolders / 800) * 4, 0, 4);
     p3 = Math.round(clamp(devPts + distPts + densityPts + holderPts, 0, 20));
   }
@@ -82,7 +99,11 @@ export function computeScoreAndVerdict(
   if (execution.status === 'VERIFIED' && em.roundTripLoss01SolPct !== null && em.depthLoss1SolPct !== null) {
     const rtPts = clamp(((cfg.maxRoundTripLossPct - em.roundTripLoss01SolPct) / cfg.maxRoundTripLossPct) * 8, 0, 8);
     const depthPts = clamp(((cfg.maxDepthCliffLossPct - em.depthLoss1SolPct) / cfg.maxDepthCliffLossPct) * 7, 0, 7);
-    const liqRatioPts = clamp((m.liqMcRatioPct / 20) * 5, 0, 5);
+    const liqRatioPts = isVet
+      ? m.liqUsd >= 120_000
+        ? 5
+        : 3
+      : clamp((m.liqMcRatioPct / 20) * 5, 0, 5);
     p4 = Math.round(clamp(rtPts + depthPts + liqRatioPts, 0, 20));
   } else {
     p4 = Math.round(clamp((m.liqMcRatioPct / 25) * 5, 0, 5));
@@ -90,7 +111,9 @@ export function computeScoreAndVerdict(
 
   // Pillar 5: Controlled Ignition, Community DNA & Organic No-Boost (0–10)
   let p5 = 0;
-  if (m.isSleeperRevival) {
+  if (isVet && m.pM5 >= 0.8 && m.pM5 <= 12.0) {
+    p5 = 7;
+  } else if (m.isSleeperRevival) {
     p5 = 7;
   } else if (m.pM5 >= 2.0 && m.pM5 <= 16.0) {
     p5 = 7;
@@ -99,7 +122,7 @@ export function computeScoreAndVerdict(
   } else if (m.pM5 >= 0 && m.pM5 < 2.0) {
     p5 = 4;
   }
-  if (!m.isBoosted) p5 += 2;
+  if (!m.isBoosted || isVet) p5 += 2;
   if (m.hasCommunityPresence) p5 += 1;
   p5 = Math.min(10, p5);
 
@@ -150,7 +173,11 @@ export function computeScoreAndVerdict(
     let stopPct = antiTop.corridor?.defaultStopLossPct ?? 15;
     let tp1Pct = antiTop.corridor?.tp1GainPct ?? 40;
     let tp2Pct = antiTop.corridor?.tp2GainPct ?? 95;
-    if (m.isSleeperRevival) {
+    if (isVet) {
+      stopPct = 10;
+      tp1Pct = 18;
+      tp2Pct = 35;
+    } else if (m.isSleeperRevival) {
       if (antiTop.corridor?.id === 'A_PRE_100K') {
         stopPct = 15;
         tp1Pct = 30;
@@ -166,7 +193,7 @@ export function computeScoreAndVerdict(
       }
     }
     const maxSafeEntryMc = antiTop.corridor
-      ? Math.round(Math.min(antiTop.corridor.maxMc, baseEntryMc * 1.05))
+      ? Math.round(Math.min(antiTop.corridor.maxMc, baseEntryMc * (isVet ? 1.04 : 1.05)))
       : Math.round(m.spotMc * 0.88);
     const hardStopMc = Math.round(baseEntryMc * (1 - stopPct / 100));
     const tp1Mc = Math.round(baseEntryMc * (1 + tp1Pct / 100));
@@ -238,9 +265,11 @@ export function computeScoreAndVerdict(
 
   return {
     verdict: 'ENTRY_READY',
-    verdictHeadline: m.isSleeperRevival
-      ? `SLEEPER REVIVAL PRE-ATH · Vol Wake x${m.volWake5mRatio.toFixed(1)} · Target TP1 +${tradePlan?.tp1Pct ?? 30}% / TP2 +${tradePlan?.tp2Pct ?? 65}%`
-      : `Lolos 4 layer ketat · ${antiTop.corridor?.label ?? 'Early Corridor'} · Net headroom +${m.netHeadroomPct.toFixed(1)}%`,
+    verdictHeadline: isVet
+      ? `[JALUR 2 · VETERAN SWING] Keluar-masuk cepat · TP1 +${tradePlan?.tp1Pct ?? 18}% / TP2 +${tradePlan?.tp2Pct ?? 35}% · SL -${tradePlan?.hardStopPct ?? 10}%`
+      : m.isSleeperRevival
+      ? `[JALUR 1 · SLEEPER REVIVAL] Vol Wake x${m.volWake5mRatio.toFixed(1)} · Target TP1 +${tradePlan?.tp1Pct ?? 30}% / TP2 +${tradePlan?.tp2Pct ?? 65}%`
+      : `[JALUR 1 · EARLY MICRO-CAP] ${antiTop.corridor?.label ?? 'Early Corridor'} · Net headroom +${m.netHeadroomPct.toFixed(1)}%`,
     totalScore,
     pillars,
     tradePlan,

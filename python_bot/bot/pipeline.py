@@ -97,6 +97,7 @@ async def audit_pair(
         rugcheck,
         require_hyper_viral_holders=anti_top.is_hyper_viral_fasttrack,
         require_steady_climber_holders=anti_top.is_steady_organic_climber,
+        require_veteran_swing=anti_top.is_veteran_swing,
     )
 
     # Layer 2B: Verifikasi Struktur Candle OHLCV asli (Anti-Pucuk Blow-Off & Klasifikasi Konsolidasi Harian)
@@ -203,8 +204,32 @@ async def run_scan_cycle(
         and not (_age_min(p) < 20.0 * 60.0 and (p.price_change_h24 >= 2_000.0 or p.price_change_h6 >= 1_200.0))
     ]
 
-    # Bagi slot Stage-2 antara koin Intraday (6m–20j) dan koin Konsolidasi Harian (>= 20j)
-    # agar koin harian yang sedang konsolidasi naik TIDAK kalah slot dari koin baru!
+    # Jalur 2 (Veteran Swing): koin mapan usia >= 7 hari (10.080m), MC $850K–$10M, LP >= $80K, belum overextended!
+    veteran_swing_pool = [
+        p
+        for p in candidates
+        if (
+            850_000.0 <= p.market_cap <= 10_000_000.0
+            and _age_min(p) >= 10_080.0
+            and p.liquidity_usd >= 80_000.0
+            and p.vol_h1 >= 18_000.0
+            and p.vol_m5 >= 2_000.0
+            and p.price_change_m5 >= 0.5
+            and p.price_change_h6 <= 35.0
+            and p.price_change_h24 <= 65.0
+        )
+    ]
+    veteran_swing_pool.sort(
+        key=lambda p: (
+            1 if "watchlist_rescan" in p.feed_sources else 0,
+            1 if (p.has_socials or p.has_website) else 0,
+            p.vol_h1,
+            p.liquidity_usd,
+        ),
+        reverse=True,
+    )
+
+    # Bagi slot Stage-2 antara Jalur 1 (Intraday + Konsolidasi Harian Micro-Cap) dan Jalur 2 (Veteran Swing)
     daily_pool = [p for p in eligible if _age_min(p) >= 20.0 * 60.0]
     intraday_pool = [p for p in eligible if _age_min(p) < 20.0 * 60.0]
 
@@ -212,13 +237,22 @@ async def run_scan_cycle(
     intraday_pool.sort(key=_candidate_rank, reverse=True)
 
     effective_limit = min(max_stage2, 12) if cfg.is_vercel else max_stage2
-    daily_slots = min(len(daily_pool), 4)
-    intraday_slots = max(0, effective_limit - daily_slots)
+    veteran_slots = min(len(veteran_swing_pool), 3)
+    daily_slots = min(len(daily_pool), 3)
+    intraday_slots = max(0, effective_limit - daily_slots - veteran_slots)
 
-    to_audit: list[PairSnapshot] = intraday_pool[:intraday_slots] + daily_pool[:daily_slots]
+    to_audit: list[PairSnapshot] = (
+        intraday_pool[:intraday_slots]
+        + daily_pool[:daily_slots]
+        + veteran_swing_pool[:veteran_slots]
+    )
     if len(to_audit) < effective_limit:
         seen = {p.mint for p in to_audit}
-        for p in intraday_pool[intraday_slots:] + daily_pool[daily_slots:]:
+        for p in (
+            intraday_pool[intraday_slots:]
+            + daily_pool[daily_slots:]
+            + veteran_swing_pool[veteran_slots:]
+        ):
             if p.mint not in seen and len(to_audit) < effective_limit:
                 to_audit.append(p)
                 seen.add(p.mint)

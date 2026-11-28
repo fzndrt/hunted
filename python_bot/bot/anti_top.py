@@ -9,20 +9,31 @@ from .config import BotConfig, ENTRY_CORRIDORS, EntryCorridor
 from .models import AntiTopResult, GateCheck, PairSnapshot
 
 
+VETERAN_MIN_AGE_MINUTES = 7.0 * 24.0 * 60.0  # 7 hari penuh (10.080 menit)
+
+
 def find_corridor(
-    projected_mc: float, include_midcap: bool
+    projected_mc: float, include_midcap: bool, age_minutes: float = 0.0
 ) -> Optional[EntryCorridor]:
     for corridor in ENTRY_CORRIDORS:
         if corridor.corridor_id in {"CORRIDOR_C_EXPANSION", "CORRIDOR_D_VIRAL_BASE"} and not include_midcap:
             continue
+        if corridor.corridor_id == "CORRIDOR_E_VETERAN_SWING":
+            # Jalur 2 HANYA untuk koin veteran >= 7 hari; koin baru > $850K tetap VETO Late-Stage Top!
+            if age_minutes < VETERAN_MIN_AGE_MINUTES:
+                continue
         if corridor.min_mc <= projected_mc <= corridor.max_mc:
             return corridor
     return None
 
 
-def classify_red_zone_label(mc: float) -> str:
+def classify_red_zone_label(mc: float, age_minutes: float = 0.0) -> str:
     if mc < 25_000:
         return "Red Zone (< $25K Micro-Cap)"
+    if mc > 10_000_000:
+        return "Mega-Cap (> $10M di luar target swing)"
+    if mc > 850_000 and age_minutes < VETERAN_MIN_AGE_MINUTES:
+        return "Late-Stage Top (> $850K · Usia < 7 Hari)"
     if mc > 850_000:
         return "Late-Stage Top (> $850K)"
     return "Di Luar Koridor Entry"
@@ -126,8 +137,10 @@ def evaluate_anti_top(
     projected_drift_pct = min(22.0, drift_ratio * 100.0)
     projected_entry_mc = spot_mc * (1.0 + projected_drift_pct / 100.0)
 
-    corridor = find_corridor(projected_entry_mc, cfg.include_midcap_corridor)
+    is_veteran_age = age_minutes >= VETERAN_MIN_AGE_MINUTES
+    corridor = find_corridor(projected_entry_mc, cfg.include_midcap_corridor, age_minutes=age_minutes)
     is_corridor_d = corridor is not None and corridor.corridor_id == "CORRIDOR_D_VIRAL_BASE"
+    is_corridor_e = corridor is not None and corridor.corridor_id == "CORRIDOR_E_VETERAN_SWING"
 
     # Corridor D ($390K–$850K) HANYA diizinkan jika memenuhi syarat ketat Viral Base Breakout
     corridor_d_qualified = (
@@ -137,28 +150,50 @@ def evaluate_anti_top(
         and liq_usd >= 40_000.0
         and 0.0 <= p_m5 <= 18.0
     )
-    corridor_ok = (corridor is not None) and ((not is_corridor_d) or corridor_d_qualified)
+    # Jalur 2 — Corridor E Veteran Swing ($850K–$10M): HANYA untuk koin berusia >= 7 hari dengan LP tebal >= $80K (>= 4.5% MC)
+    is_veteran_swing = (
+        is_corridor_e
+        and is_veteran_age
+        and liq_usd >= 80_000.0
+        and liq_mc_ratio_pct >= 4.5
+    )
+    signal_track = "VETERAN_SWING" if is_veteran_swing else "EARLY_MICROCAP"
+    corridor_ok = (corridor is not None) and (
+        (not is_corridor_d or corridor_d_qualified)
+        and (not is_corridor_e or is_veteran_swing)
+    )
     if is_corridor_d and not corridor_d_qualified:
         corridor_label = "Late-Stage Top (> $390K tanpa Viral Base)"
+    elif is_corridor_e and not is_veteran_swing:
+        corridor_label = "Veteran Swing LP Tipis (> $850K butuh LP >= $80K & >= 4.5% MC)"
     else:
         corridor_label = (
-            corridor.label if corridor else classify_red_zone_label(projected_entry_mc)
+            corridor.label if corridor else classify_red_zone_label(projected_entry_mc, age_minutes=age_minutes)
         )
 
     if corridor and corridor_ok:
-        net_headroom_pct = (
-            (corridor.ceiling_mc - projected_entry_mc) / projected_entry_mc * 100.0
-            if projected_entry_mc > 0
-            else 0.0
-        )
+        if is_veteran_swing:
+            # Target swing veteran adalah +18%..+35% dengan ruang napas ke target swing (+40% atau ceiling $13.5M)
+            swing_ceiling = min(corridor.ceiling_mc, projected_entry_mc * 1.40)
+            net_headroom_pct = (
+                (swing_ceiling - projected_entry_mc) / projected_entry_mc * 100.0
+                if projected_entry_mc > 0
+                else 0.0
+            )
+        else:
+            net_headroom_pct = (
+                (corridor.ceiling_mc - projected_entry_mc) / projected_entry_mc * 100.0
+                if projected_entry_mc > 0
+                else 0.0
+            )
     else:
         net_headroom_pct = 0.0
 
     if corridor_ok:
         corridor_severity = "PASS"
-    elif is_corridor_d and not corridor_d_qualified:
+    elif (is_corridor_d and not corridor_d_qualified) or (is_corridor_e and not is_veteran_swing):
         corridor_severity = "VETO"
-    elif projected_entry_mc < 25_000 or projected_entry_mc > 850_000:
+    elif projected_entry_mc < 25_000 or projected_entry_mc > 10_000_000 or (projected_entry_mc > 850_000 and not is_veteran_age):
         corridor_severity = "VETO"
     else:
         corridor_severity = "WAIT_DIP"
@@ -167,18 +202,26 @@ def evaluate_anti_top(
         GateCheck(
             id="entry_corridor",
             layer="ANTI_TOP",
-            label="Koridor Early-Entry (A–D Viral Base) & Zona Atas",
+            label="Koridor Entry (Jalur 1: A–D Micro-Cap | Jalur 2: E Veteran Swing >=7hri)",
             passed=corridor_ok,
             severity=corridor_severity,
             actual=f"Proj ${projected_entry_mc:,.0f} ({corridor_label})",
-            threshold="$25K–$390K" + (" | D:$390K–$850K (Vol1h>=$250K, Liq>=$40K)" if cfg.include_midcap_corridor else ""),
+            threshold="$25K–$850K (Jalur 1) | E:$850K–$10M Usia>=7hri LP>=$80K (Jalur 2)",
             detail=(
-                f"Masuk {corridor_label} setelah kompensasi delay {cfg.reaction_delay_sec}s (+{projected_drift_pct:.1f}%)."
-                if corridor_ok
+                f"[JALUR 2 · VETERAN SWING] Masuk {corridor_label} (usia {age_minutes / 1440.0:.1f} hari, LP ${liq_usd:,.0f})."
+                if is_veteran_swing and corridor_ok
                 else (
-                    f"DITOLAK: MC ${projected_entry_mc:,.0f} di atas $390K namun belum memenuhi syarat Viral Base (wajib Vol1h >= $250K, Vol5m >= $15K, Liq >= $40K, 5m <= +18%)."
-                    if is_corridor_d and not corridor_d_qualified
-                    else f"Berada di {corridor_label} — di luar koridor aman."
+                    f"Masuk {corridor_label} setelah kompensasi delay {cfg.reaction_delay_sec}s (+{projected_drift_pct:.1f}%)."
+                    if corridor_ok
+                    else (
+                        f"DITOLAK: MC ${projected_entry_mc:,.0f} di atas $390K namun belum memenuhi syarat Viral Base (wajib Vol1h >= $250K, Vol5m >= $15K, Liq >= $40K, 5m <= +18%)."
+                        if is_corridor_d and not corridor_d_qualified
+                        else (
+                            f"DITOLAK: Veteran Swing > $850K wajib LP >= $80K & >= 4.5% MC (aktual ${liq_usd:,.0f}, {liq_mc_ratio_pct:.1f}% MC)."
+                            if is_corridor_e and not is_veteran_swing
+                            else f"Berada di {corridor_label} — di luar koridor aman."
+                        )
+                    )
                 )
             ),
         )
@@ -238,24 +281,33 @@ def evaluate_anti_top(
         and (not pair.is_boosted)
     )
     effective_max_h1 = (
-        cfg.max_h1_change_pct
-        if is_proven_runner
-        else (185.0 if is_early_corridor_a_wave else cfg.max_fresh_h1_change_pct)
+        28.0
+        if is_veteran_swing
+        else (
+            cfg.max_h1_change_pct
+            if is_proven_runner
+            else (185.0 if is_early_corridor_a_wave else cfg.max_fresh_h1_change_pct)
+        )
     )
-    effective_max_m5 = 18.0 if is_corridor_d else cfg.max_m5_change_pct
+    effective_max_m5 = 12.0 if is_veteran_swing else (18.0 if is_corridor_d else cfg.max_m5_change_pct)
 
-    # v5.2 Anti-Falling-Knife:
+    # v5.2/v5.6 Anti-Falling-Knife:
+    # - Jalur 2 Veteran Swing: WAJIB aktif hijau terkendali (5m [+0.8%..+12%], 1h [+2.0%..+28%])
     # - Koin biasa: WAJIB 5m >= 0.0% & 1h >= -2.0% (dilarang beli candle merah yang mulai turun!)
     # - Hyper-Viral / Viral Pullback aktif (Vol5m >= $25K, Vol1h >= $250K, Buy5m >= 52% & Buy1h >= 53%): toleransi ringan hingga -1.5% 5m
     # - Koin Harian (>= 20j): wajib 5m >= +1.0% & 1h >= -4.0% (konfirmasi bangun hijau!)
     viral_mild_pullback_allowed = (
-        is_viral_velocity
+        (not is_veteran_swing)
+        and is_viral_velocity
         and pair.vol_m5 >= 25_000.0
         and pair.vol_h1 >= 250_000.0
         and buy_ratio_5m >= 52.0
         and buy_ratio_1h >= 53.0
     )
-    if is_daily_coin:
+    if is_veteran_swing:
+        m5_floor = 0.8
+        h1_floor = 2.0
+    elif is_daily_coin:
         m5_floor = 1.0
         h1_floor = -4.0
     elif viral_mild_pullback_allowed:
@@ -319,9 +371,9 @@ def evaluate_anti_top(
         )
     )
 
-    # 4. Likuiditas Minimum & Rasio LP/MC (Anti-Thin Pool)
-    min_liq_req = 40_000.0 if is_corridor_d else cfg.min_liquidity_usd
-    min_liq_ratio_req = 7.0 if is_corridor_d else 8.0
+    # 4. Likuiditas Minimum & Rasio LP/MC (Anti-Thin Pool — Veteran Swing $850K–$10M wajib >= $80K & >= 4.5% MC)
+    min_liq_req = 80_000.0 if is_veteran_swing else (40_000.0 if is_corridor_d else cfg.min_liquidity_usd)
+    min_liq_ratio_req = 4.5 if is_veteran_swing else (7.0 if is_corridor_d else 8.0)
     liq_ok = liq_usd >= min_liq_req and liq_mc_ratio_pct >= min_liq_ratio_req
     checks.append(
         GateCheck(
@@ -349,13 +401,14 @@ def evaluate_anti_top(
         or (pair.vol_h1 >= 12_000.0 and vol_h1_share_24h_pct >= 25.0)
     )
 
-    # 6. LIVE DEMAND VELOCITY (v4.1: MC-Scaled Steady Organic Climber + Pullback Contraction + Anti-Wash-Bot!)
-    is_aged_wakeup = age_minutes >= 720.0 and has_volume_wakeup
+    # 6. LIVE DEMAND VELOCITY (v5.6: Track 1 Intraday + Track 2 Veteran Swing $850K–$10M!)
+    is_aged_wakeup = (not is_veteran_swing) and age_minutes >= 720.0 and has_volume_wakeup
     # Steady Organic Climber (seperti duk di $35K–$135K): Vol5m $4.5K–$7.9K diperbolehkan HANYA jika
     # arus 1 jam sangat tebal (Vol1h >= $45K, Turn1h >= 0.70x, Buy 1h >= 54%, ticket >= $28/tx, >=300 tx 1h)
     # dan tetap diverifikasi >=400 holders di Layer 1. Koin sampah tetap mati total!
     is_steady_organic_climber = (
-        (not is_aged_wakeup)
+        (not is_veteran_swing)
+        and (not is_aged_wakeup)
         and age_minutes >= 45.0
         and spot_mc <= 145_000.0
         and pair.vol_m5 >= 4_500.0
@@ -366,7 +419,11 @@ def evaluate_anti_top(
         and avg_ticket_5m >= 28.0
         and tx_1h >= 300
     )
-    if is_aged_wakeup:
+    if is_veteran_swing:
+        req_vol_m5 = 2_500.0
+        req_vol_h1 = 18_000.0
+        req_turnover_h1 = 0.004
+    elif is_aged_wakeup:
         req_vol_m5 = 2_000.0
         req_vol_h1 = 12_000.0
         req_turnover_h1 = 0.15
@@ -389,17 +446,19 @@ def evaluate_anti_top(
     vol_h1_ok = (age_minutes < 10.0) or (
         pair.vol_h1 >= req_vol_h1 and turnover_h1_ratio >= req_turnover_h1
     )
-    # Anti-Momentum-Death (v4): kecualikan kontraksi volume sehat saat pullback jika Vol5m absolut >= $12K!
+    # Anti-Momentum-Death: kecualikan kontraksi volume sehat saat pullback jika Vol5m >= $12K (atau >= $5K utk Veteran Swing)
+    effective_accel_min = 0.45 if is_veteran_swing else cfg.min_vol_m5_accel_ratio
+    veteran_pullback_vol_ok = is_veteran_swing and pair.vol_m5 >= 5_000.0
     vol_dying = (
         (age_minutes >= 25.0)
         and (pair.vol_h1 > 0)
-        and (vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio)
+        and (vol_m5_accel_ratio < effective_accel_min)
         and (not is_pullback_contraction_ok)
+        and (not veteran_pullback_vol_ok)
     )
-    # v5.5 Anti-PvP-Bundler Ticket Floor ($28/tx 5m & $24/tx 1h untuk intraday): semua winner asli >= $30.3/tx,
-    # sedangkan koin PvP churn yang mati 20 menit kemudian umumnya bermain di $18–$27/tx.
-    min_ticket_5m_req = 22.0 if is_daily_coin else 28.0
-    min_ticket_1h_req = 20.0 if is_daily_coin else 24.0
+    # v5.5/v5.6 Anti-PvP-Bundler Ticket Floor ($35/tx Veteran Swing, $28/tx Intraday, $22/tx Daily micro-cap)
+    min_ticket_5m_req = 35.0 if is_veteran_swing else (22.0 if is_daily_coin else 28.0)
+    min_ticket_1h_req = 28.0 if is_veteran_swing else (20.0 if is_daily_coin else 24.0)
     wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < min_ticket_5m_req
     sideways_churn = (not is_daily_coin) and turnover_h1_ratio >= 1.8 and p_h1 < 8.0
     # v5 Extreme Wash-Churn (kasus SuperFIONA: Turn1h 38.8x tapi harga flat +23% / 5m -0.05%)
@@ -494,7 +553,9 @@ def evaluate_anti_top(
         and 44.0 <= buy_ratio_5m < 52.0
         and buy_ratio_1h >= 51.0
     )
-    h6_sell_bleed = age_minutes >= 360.0 and tx_6h >= 20 and buy_ratio_6h < 49.0
+    h6_min_buy_req = 50.0 if is_veteran_swing else 49.0
+    h1_min_buy_req = 53.0 if is_veteran_swing else 52.0
+    h6_sell_bleed = age_minutes >= 360.0 and tx_6h >= 20 and buy_ratio_6h < h6_min_buy_req
 
     if whale_siphon:
         siphon_ok = False
@@ -506,21 +567,21 @@ def evaluate_anti_top(
         siphon_ok = False
         siphon_sev = "VETO"
         siphon_detail = (
-            f"DITOLAK: Distribusi multi-jam (6h buy hanya {buy_ratio_6h:.0f}% < 49%) — rawan dead-cat bounce lalu terjun bebas."
+            f"DITOLAK: Distribusi multi-jam (6h buy hanya {buy_ratio_6h:.0f}% < {h6_min_buy_req:.0f}%) — rawan dead-cat bounce lalu terjun bebas."
         )
-    elif whale_absorption:
+    elif whale_absorption and not is_veteran_swing:
         siphon_ok = True
         siphon_sev = "PASS"
         siphon_detail = (
             f"Akumulasi Whale terdeteksi (5m {p_m5:+.1f}% dengan {buy_ratio_5m:.0f}% buy tx & Vol5m ${pair.vol_m5:,.0f} — order beli besar menyerap retail TP)."
         )
     else:
-        siphon_ok = buy_ratio_5m >= 52.0 and buy_ratio_1h >= 52.0
+        siphon_ok = buy_ratio_5m >= 52.0 and buy_ratio_1h >= h1_min_buy_req and (not is_veteran_swing or buy_ratio_6h >= 50.0)
         siphon_sev = "PASS" if siphon_ok else ("VETO" if (buy_ratio_5m < 47.0 or buy_ratio_1h < 48.0) else "WAIT_DIP")
         siphon_detail = (
-            f"Dominasi buyer bersih (5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% buy)."
+            f"Dominasi buyer bersih (5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% · 6h {buy_ratio_6h:.0f}% buy)."
             if siphon_ok
-            else f"Tekanan beli belum dominan (5m {buy_ratio_5m:.0f}%, 1h {buy_ratio_1h:.0f}% < 52%) — rawan distribusi/turun bebas."
+            else f"Tekanan beli belum dominan (5m {buy_ratio_5m:.0f}%, 1h {buy_ratio_1h:.0f}% < {h1_min_buy_req:.0f}%, 6h {buy_ratio_6h:.0f}%) — rawan distribusi/turun bebas."
         )
 
     checks.append(
@@ -531,16 +592,27 @@ def evaluate_anti_top(
             passed=siphon_ok,
             severity=siphon_sev,
             actual=f"5m {buy_ratio_5m:.0f}% · 1h {buy_ratio_1h:.0f}% · 6h {buy_ratio_6h:.0f}% buy",
-            threshold="5m>=52% & 1h>=52% (atau Whale Absorption +3%), 6h>=49%",
+            threshold=(
+                "Veteran Swing: 5m>=52% & 1h>=53% & 6h>=50%"
+                if is_veteran_swing
+                else "5m>=52% & 1h>=52% (atau Whale Absorption +3%), 6h>=49%"
+            ),
             detail=siphon_detail,
         )
     )
 
-    # 7b. Paid-Boost Exit-Liquidity Trap Guard (v5: Seluruh raksasa organik mihao/STONK/$Zero/PAIR/duk = Non-Boosted!)
+    # 7b. Paid-Boost Exit-Liquidity Trap Guard (v5.6: Track 1 tetap anti-boost; Track 2 Veteran >=7hri LP>=$80K diizinkan boost komunitas!)
     from .config import ORGANIC_FEED_SOURCES
 
     organic_feeds_cnt = sum(1 for s in pair.feed_sources if s in ORGANIC_FEED_SOURCES)
-    boost_override_ok = (
+    veteran_community_boost_ok = (
+        is_veteran_swing
+        and liq_usd >= 80_000.0
+        and pair.vol_h1 >= 18_000.0
+        and buy_ratio_1h >= 53.0
+        and buy_ratio_6h >= 50.0
+    )
+    boost_override_ok = veteran_community_boost_ok or (
         organic_feeds_cnt >= 2
         and pair.pool_count >= 2
         and pair.vol_m5 >= 25_000.0
@@ -556,22 +628,24 @@ def evaluate_anti_top(
             passed=paid_boost_ok,
             severity="PASS" if paid_boost_ok else "VETO",
             actual="Organik (Tanpa Boost)" if not pair.is_boosted else f"PAID BOOST ({organic_feeds_cnt} org, {pair.pool_count} pool)",
-            threshold="Non-Boosted (atau >=2 org feed + >=2 pool + Vol5m>=$25K + Buy>=55%)",
+            threshold="Non-Boosted (atau Veteran >=7hri LP>=$80K / >=2 org feed + >=2 pool + Vol5m>=$25K)",
             detail=(
                 "100% pertumbuhan organik tanpa iklan Paid Boost DexScreener."
                 if not pair.is_boosted
                 else (
-                    "Ada Paid Boost tetapi terkonfirmasi kuat oleh multi-pool & arus organik masif."
-                    if paid_boost_ok
-                    else "DITOLAK (Jebakan Paid Boost): Token membeli boost DexScreener tanpa konfirmasi multi-pool & demand organik kuat — sangat rawan dump bebas."
+                    "Boost komunitas pada koin veteran >= 7 hari dengan LP >= $80K & tekanan beli sehat (Jalur 2)."
+                    if veteran_community_boost_ok
+                    else (
+                        "Ada Paid Boost tetapi terkonfirmasi kuat oleh multi-pool & arus organik masif."
+                        if paid_boost_ok
+                        else "DITOLAK (Jebakan Paid Boost): Token membeli boost DexScreener tanpa konfirmasi multi-pool & demand organik kuat — sangat rawan dump bebas."
+                    )
                 )
             ),
         )
     )
 
-    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.5: Tutup celah +1000% dari lahir Pump.fun pada usia 20–59m & >=60m!)
-    # Ingat: +420% dari migrasi PumpSwap ($30K) berarti koin sudah $156K (~31x / +3,000% dari lahir $5K di Pump.fun!).
-    # Hanya Mega-Viral ($Zero), Corridor D Viral Base, atau Revival Koridor A (<= $92K seperti Zhaki) yang dikecualikan.
+    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.6: Track 1 Anti +1000% dari Lahir | Track 2 Anti Kejar Pucuk Swing >+65% 24h!)
     is_extreme_parabolic_late = (not is_daily_coin) and (
         p_h24 >= 2_000.0
         or p_h6 >= 1_200.0
@@ -588,25 +662,37 @@ def evaluate_anti_top(
             or (p_h24 >= 850.0 or p_h6 >= 600.0)
         )
     )
-    is_near_local_ath = age_minutes >= 360.0 and (p_h6 > 160.0 or p_h24 > 260.0)
+    is_veteran_swing_overextended = is_veteran_swing and (p_h6 > 35.0 or p_h24 > 65.0)
+    is_near_local_ath = (
+        is_veteran_swing_overextended
+        or ((not is_veteran_swing) and age_minutes >= 360.0 and (p_h6 > 160.0 or p_h24 > 260.0))
+    )
     late_ath_hard_veto = is_extreme_parabolic_late or is_intraday_late_non_base
     pre_ath_ok = (not is_near_local_ath) and (not late_ath_hard_veto)
     checks.append(
         GateCheck(
             id="pre_ath_extension",
             layer="ANTI_TOP",
-            label="Anti-Late-ATH & Pre-ATH Extension Guard (Anti +1000% dari Lahir)",
+            label="Anti-Late-ATH & Pre-ATH Extension Guard (Anti Kejar Pucuk)",
             passed=pre_ath_ok,
             severity="PASS" if pre_ath_ok else ("VETO" if late_ath_hard_veto else "WAIT_DIP"),
             actual=f"1h {p_h1:+.0f}% · 6h {p_h6:+.0f}% · 24h {p_h24:+.0f}% (usia {age_minutes / 60.0:.1f}j)",
-            threshold="MC>=$135K: < +420% pasca-migrasi (kecuali Mega-Viral) · Koin >=6j: 6h<=+160% & 24h<=+260%",
+            threshold=(
+                "Veteran Swing: 6h <= +35% & 24h <= +65% (tangkap awal swing, bukan puncak)"
+                if is_veteran_swing
+                else "MC>=$135K: < +420% pasca-migrasi (kecuali Mega-Viral) · Koin >=6j: 6h<=+160% & 24h<=+260%"
+            ),
             detail=(
-                "Masih di fase awal/sebelum zona puncak ekstrem — ruang kenaikan masih lebar."
+                "Masih di fase awal gelombang sebelum pucuk — ruang swing masih sehat."
                 if pre_ath_ok
                 else (
                     f"DITOLAK (Terlalu Telat / ATH Pasca-Lahir): Koin sudah melesat terlalu jauh pasca-migrasi (MC ${spot_mc:,.0f}, 1h {p_h1:+.0f}%, 6h {p_h6:+.0f}%, 24h {p_h24:+.0f}%) — rawan langsung dump!"
                     if late_ath_hard_veto
-                    else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu base konsolidasi baru."
+                    else (
+                        f"Veteran Swing sudah naik terlalu jauh hari ini (6h {p_h6:+.0f}%, 24h {p_h24:+.0f}% > +65%) — jangan kejar pucuk, tunggu pullback -10% s/d -20%."
+                        if is_veteran_swing_overextended
+                        else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu base konsolidasi baru."
+                    )
                 )
             ),
         )
@@ -623,7 +709,8 @@ def evaluate_anti_top(
         buy_ratio_5m >= 52.0 and buy_ratio_1h >= 52.0 and buy_ratio_6h >= 50.0 and pair.buys_m5 >= 5
     )
     is_sleeper_revival = (
-        age_minutes >= 720.0
+        (not is_veteran_swing)
+        and age_minutes >= 720.0
         and corridor_ok
         and headroom_ok
         and pre_ath_ok
@@ -674,4 +761,6 @@ def evaluate_anti_top(
         is_hyper_viral_fasttrack=is_hyper_viral_fasttrack,
         is_steady_organic_climber=is_steady_organic_climber,
         has_community_presence=has_community_presence,
+        is_veteran_swing=is_veteran_swing,
+        signal_track=signal_track,
     )

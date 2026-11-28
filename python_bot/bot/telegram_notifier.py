@@ -17,7 +17,8 @@ def _esc(val: object) -> str:
     return html.escape(str(val or ""))
 
 
-def format_entry_alert(audit: AuditResult) -> str:
+def format_early_microcap_alert(audit: AuditResult) -> str:
+    """Format Alert JALUR 1 — Early Micro-Cap ($25K–$850K · Target Ratusan Persen)."""
     p = audit.pair
     at = audit.anti_top
     ex = audit.execution
@@ -29,19 +30,19 @@ def format_entry_alert(audit: AuditResult) -> str:
     age_label = f"{age_days:.1f} hari" if age_days >= 1.0 else (f"{at.age_minutes / 60.0:.1f} jam" if at.age_minutes >= 60.0 else f"{at.age_minutes:.0f} menit")
     total_pools = max(int(p.pool_count or 1), int(sec.active_markets_count or 1))
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
-        title_line = f"💎 <b>DAILY CONSOLIDATION BREAKOUT — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · DAILY BREAKOUT] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_corridor_d_viral_base:
-        title_line = f"🚀 <b>VIRAL BASE BREAKOUT (CORRIDOR D) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · VIRAL BASE D] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_hyper_viral_fasttrack:
-        title_line = f"⚡ <b>EARLY FAST-TRACK (6–9m) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · EARLY FAST-TRACK 6–9m] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif st is not None and st.regime == "PULLBACK_RECLAIM" and at.is_viral_velocity:
-        title_line = f"🔥 <b>VIRAL PULLBACK RECLAIM — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · VIRAL PULLBACK RECLAIM] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_sleeper_revival:
-        title_line = f"⚡ <b>SLEEPER REVIVAL (PRE-ATH) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · SLEEPER REVIVAL] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     elif at.is_steady_organic_climber:
-        title_line = f"📈 <b>STEADY ORGANIC CLIMBER — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · STEADY CLIMBER] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
     else:
-        title_line = f"🟢 <b>ENTRY READY (v5.1 EARLY-WAVE) — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
+        title_line = f"🟢 <b>[JALUR 1 · EARLY MICRO-CAP] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)"
 
     if st is not None and st.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         chart_line = (
@@ -67,6 +68,7 @@ def format_entry_alert(audit: AuditResult) -> str:
 
     lines = [
         title_line,
+        "🏷️ <i>Jalur 1: Koin Micro-Cap Awal ($25K–$850K) · Potensi Multi-X + Disciplined TP</i>",
         f"Nama: {_esc(p.name)} | DEX: <code>{_esc(p.dex_id)}</code> | Quote: <b>{_esc(sec.hard_quote_symbol)}</b> | Usia: <b>{age_label}</b>",
         f"Mint: <code>{_esc(p.mint)}</code>",
         "",
@@ -87,7 +89,7 @@ def format_entry_alert(audit: AuditResult) -> str:
         lines.extend(
             [
                 "",
-                "<b>Rencana Disiplin Modal (Real Money):</b>",
+                "<b>Rencana Disiplin Modal (Jalur 1 — Micro-Cap):</b>",
                 f"• Batas Atas Entry: <b>&lt;= ${plan.max_safe_entry_mc:,.0f}</b> (jangan kejar di atas ini)",
                 f"• Hard Stop-Loss: <b>${plan.hard_stop_mc:,.0f} (-{plan.hard_stop_pct:.0f}%)</b>",
                 f"• TP1 (Jual 50% + BE): <b>${plan.tp1_mc:,.0f} (+{plan.tp1_pct:.0f}%)</b> [R:R {plan.risk_reward_to_tp1}x]",
@@ -100,6 +102,70 @@ def format_entry_alert(audit: AuditResult) -> str:
         f'<a href="https://rugcheck.xyz/tokens/{p.mint}">RugCheck</a>'
     )
     return "\n".join(lines)
+
+
+def format_veteran_swing_alert(audit: AuditResult) -> str:
+    """Format Alert JALUR 2 — Veteran Swing ($850K–$10M, Usia >= 7 Hari · Keluar-Masuk Cepat +18%..+35%)."""
+    p = audit.pair
+    at = audit.anti_top
+    ex = audit.execution
+    sec = audit.security
+    st = audit.structure
+    plan = audit.trade_plan
+
+    age_days = at.age_minutes / 1440.0
+    setup_label = (
+        "PULLBACK RECLAIM"
+        if (st is not None and st.regime == "PULLBACK_RECLAIM")
+        else "BASE BREAKOUT"
+    )
+    chart_detail = (
+        f"Box <b>{st.base_range_pct:.0f}%</b> · DD Peak <code>-{st.drawdown_from_peak_pct:.1f}%</code> · "
+        f"GreenVol <b>{st.green_vol_share_pct:.0f}%</b> · Vol <b>{st.vol_expansion_ratio:.1f}x</b>"
+        if st is not None and st.ohlcv_verified
+        else f"1h <code>{at.p_h1:+.1f}%</code> · 6h <code>{at.p_h6:+.1f}%</code> · 24h <code>{at.p_h24:+.1f}%</code>"
+    )
+    lp_lock_txt = f"{sec.lp_locked_pct:.0f}% Lock" if sec.lp_locked_pct is not None else "LP Tebal"
+
+    lines = [
+        f"🔵 <b>[JALUR 2 · VETERAN SWING +18%..+35%] — ${_esc(p.symbol)}</b> (Skor <b>{audit.total_score}/100</b>)",
+        "⚡ <b>MODE KELUAR-MASUK CEPAT</b> — <i>Koin mapan (&gt;=7 hari), ambil cuan puluhan persen lalu keluar! BUKAN hold 10x.</i>",
+        f"Setup: <b>{setup_label}</b> | Nama: {_esc(p.name)} | Usia: <b>{age_days:.0f} hari</b> | DEX: <code>{_esc(p.dex_id)}</code>",
+        f"Mint: <code>{_esc(p.mint)}</code>",
+        "",
+        "<b>🧭 4 Pilar Veteran Swing (Mid-Cap Likuid):</b>",
+        f"1. Struktur 1h: {chart_detail}",
+        f"2. Arus Swing: Vol5m <b>${p.vol_m5:,.0f}</b> (${at.avg_ticket_5m_usd:.0f}/tx) · Vol1h <b>${p.vol_h1:,.0f}</b> · Buy 5m/1h/6h <code>{at.buy_ratio_5m_pct:.0f}%/{at.buy_ratio_1h_pct:.0f}%/{at.buy_ratio_6h_pct:.0f}%</code>",
+        f"3. Likuiditas & Eksekusi: LP <b>${at.liq_usd:,.0f}</b> ({at.liq_mc_ratio_pct:.1f}% MC · {lp_lock_txt}) · Jupiter 0.1S <code>-{ex.round_trip_loss_01_sol_pct}%</code> · 1S <code>-{ex.depth_loss_1_sol_pct}%</code>",
+        f"4. Kebersihan Veteran: <b>{sec.total_holders:,} holder</b> (${sec.mc_per_holder_usd:,.0f}/H) · Dev <code>{sec.dev_pct}%</code> · Top1 <code>{sec.top1_pct}%</code> · Top10 <code>{sec.top10_pct}%</code> · RC <code>{sec.rugcheck_score}</code>",
+        "",
+        f"• Spot MC: <b>${at.spot_mc:,.0f}</b> → Proyeksi: <b>${at.projected_entry_mc:,.0f}</b>",
+        f"• Pergerakan 5m / 1h / 6h / 24h: <code>{at.p_m5:+.1f}%</code> / <code>{at.p_h1:+.1f}%</code> / <code>{at.p_h6:+.1f}%</code> / <code>{at.p_h24:+.1f}%</code>",
+    ]
+    if plan:
+        lines.extend(
+            [
+                "",
+                "<b>🎯 Rencana Swing Cepat (Wajib Disiplin Keluar-Masuk):</b>",
+                f"• Batas Atas Entry: <b>&lt;= ${plan.max_safe_entry_mc:,.0f}</b> (maks +4% dari spot, jangan FOMO)",
+                f"• Hard Stop-Loss Ketat: <b>${plan.hard_stop_mc:,.0f} (-{plan.hard_stop_pct:.0f}%)</b>",
+                f"• TP1 (Ambil 60% &amp; Geser SL ke BE): <b>${plan.tp1_mc:,.0f} (+{plan.tp1_pct:.0f}%)</b> [R:R {plan.risk_reward_to_tp1}x]",
+                f"• TP2 (Tutup Sisa 40%): <b>${plan.tp2_mc:,.0f} (+{plan.tp2_pct:.0f}%)</b> [R:R {plan.risk_reward_to_tp2}x]",
+            ]
+        )
+    lines.append(
+        f'\n<a href="https://jup.ag/swap/{SOL_MINT}-{p.mint}">Jupiter</a> · '
+        f'<a href="https://dexscreener.com/solana/{p.mint}">DexScreener</a> · '
+        f'<a href="https://rugcheck.xyz/tokens/{p.mint}">RugCheck</a>'
+    )
+    return "\n".join(lines)
+
+
+def format_entry_alert(audit: AuditResult) -> str:
+    """Router format alert Dual-Track: Jalur 2 (Veteran Swing) vs Jalur 1 (Early Micro-Cap)."""
+    if audit.signal_track == "VETERAN_SWING" or audit.anti_top.is_veteran_swing:
+        return format_veteran_swing_alert(audit)
+    return format_early_microcap_alert(audit)
 
 
 def format_exit_alert(pos: TrackedPosition) -> str:
@@ -122,9 +188,15 @@ class TelegramNotifier:
     def __init__(self, cfg: BotConfig) -> None:
         self.token = cfg.telegram_bot_token
         self.chat_id = cfg.telegram_chat_id
+        self.swing_chat_id = cfg.telegram_swing_chat_id or cfg.telegram_chat_id
         self.enabled = bool(self.token and self.chat_id)
         self.last_error: str = ""
         self._last_update_id = 0
+
+    def target_chat_for_audit(self, audit: AuditResult) -> str:
+        if audit.signal_track == "VETERAN_SWING" or audit.anti_top.is_veteran_swing:
+            return self.swing_chat_id
+        return self.chat_id
 
     async def send_message(
         self, client: httpx.AsyncClient, text: str, chat_id: Optional[str] = None
@@ -209,16 +281,20 @@ async def handle_telegram_command(
             client,
             "\n".join(
                 [
-                    "<b>Corridor Desk v5.0 — Anti-Freefall VWAP, Winner-DNA &amp; 100% Organic Radar</b>",
+                    "<b>Corridor Desk v5.6 — Dual-Track Radar (Jalur 1 Micro-Cap &amp; Jalur 2 Veteran Swing)</b>",
                     f"Runtime: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS Worker'}</code> | Storage: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     "",
+                    "<b>2 Jalur Alert Berbeda:</b>",
+                    "• 🟢 <b>[JALUR 1 · EARLY MICRO-CAP]</b>: $25K–$850K, Anti-ATH &amp; Anti-20m-Death",
+                    "• 🔵 <b>[JALUR 2 · VETERAN SWING]</b>: $850K–$10M, usia &gt;=7 hari, keluar-masuk cepat TP +18%/+35%, SL -10%",
+                    "",
                     "<b>Daftar Perintah:</b>",
-                    "• <code>/scan</code> — Pindai 10 feed 100% organik + Watchlist Rescan (Anti-Boost &amp; Anti-Freefall)",
-                    "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 5 layer + VWAP OHLCV sebelum entry manual",
+                    "• <code>/scan</code> — Pindai 11 feed organik Dual-Track + Watchlist Rescan",
+                    "• <code>/inspect &lt;MINT&gt;</code> — Audit penuh 5 layer (otomatis deteksi Jalur 1 vs Jalur 2)",
                     "• <code>/track &lt;MINT&gt; &lt;ENTRY_MC&gt; &lt;MODAL_USD&gt;</code> — Masukkan ke Exit Guard",
                     "• <code>/positions</code> — Lihat PnL &amp; AMM LP Retention posisi aktif",
                     "• <code>/close &lt;MINT&gt;</code> — Hapus posisi dari Exit Guard",
-                    "• <code>/status</code> — Cek konfigurasi bot, Watchlist &amp; penyimpanan",
+                    "• <code>/status</code> — Cek konfigurasi Dual-Track, Watchlist &amp; penyimpanan",
                 ]
             ),
             chat_id,
@@ -228,17 +304,17 @@ async def handle_telegram_command(
     if cmd == "/status":
         positions = await store.list_positions()  # type: ignore[attr-defined]
         wl_mints = await store.list_watchlist_mints(limit=15)  # type: ignore[attr-defined]
+        swing_route = "Chat Terpisah (TELEGRAM_SWING_CHAT_ID)" if cfg.telegram_swing_chat_id else "Chat Utama (Header 🔵 [JALUR 2 · VETERAN SWING])"
         await tg.send_message(
             client,
             "\n".join(
                 [
-                    "<b>Status Bot Corridor Desk v5.0 (Anti-Freefall)</b>",
-                    f"• Lingkungan: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS'}</code>",
-                    f"• Penyimpanan: <code>{getattr(store, 'mode', 'sqlite')}</code>",
+                    "<b>Status Bot Corridor Desk v5.6 (Dual-Track)</b>",
+                    f"• Lingkungan: <code>{'Vercel Serverless' if cfg.is_vercel else 'VPS'}</code> | Storage: <code>{getattr(store, 'mode', 'sqlite')}</code>",
                     f"• Posisi Aktif Exit Guard: <b>{len(positions)}</b> | Watchlist Auto-Rescan: <b>{len(wl_mints)}</b>",
                     f"• Ambang Skor Minimal: <b>{cfg.min_score}/100</b> | Delay: <b>{cfg.reaction_delay_sec}s</b>",
-                    f"• Intraday Min Vol: <b>${cfg.min_vol_m5_usd:,.0f}/5m</b> (Steady Climber $4.5K) · <b>${cfg.min_vol_h1_usd:,.0f}/1h</b>",
-                    f"• Filter v5: <b>VWAP 5m Guard · MC/Holder &lt;=$320 · Buy&gt;=52% · Anti-Paid-Boost</b>",
+                    "• 🟢 <b>Jalur 1 (Micro-Cap)</b>: $25K–$850K · Anti-ATH &amp; Anti-20m-Death",
+                    f"• 🔵 <b>Jalur 2 (Veteran Swing)</b>: $850K–$10M · &gt;=7 hari · SL -10% / TP +18% / +35% · Route: {swing_route}",
                 ]
             ),
             chat_id,
@@ -246,7 +322,7 @@ async def handle_telegram_command(
         return
 
     if cmd == "/scan":
-        await tg.send_message(client, "Memindai 10 feed 100% organik + Watchlist Auto-Rescan (v5.0)...", chat_id)
+        await tg.send_message(client, "Memindai 11 feed Dual-Track (Jalur 1 Micro-Cap + Jalur 2 Veteran Swing)...", chat_id)
         wl_mints = await store.list_watchlist_mints(limit=15)  # type: ignore[attr-defined]
         results, _ = await run_scan_cycle(client, cfg, watchlist_mints=wl_mints)
         ready = [r for r in results if r.verdict == "ENTRY_READY"]
@@ -258,14 +334,15 @@ async def handle_telegram_command(
             extra = ""
             if watch:
                 top_w = watch[0]
-                extra = f"\nKandidat Watch teratas: <b>${_esc(top_w.pair.symbol)}</b> ({top_w.total_score}/100) — {_esc(top_w.headline)}"
+                track_badge = "🔵 Jalur 2" if top_w.signal_track == "VETERAN_SWING" else "🟢 Jalur 1"
+                extra = f"\nKandidat Watch teratas ({track_badge}): <b>${_esc(top_w.pair.symbol)}</b> ({top_w.total_score}/100) — {_esc(top_w.headline)}"
             await tg.send_message(
                 client,
-                f"Scan v5.0 selesai ({len(results)} diaudit | {len(watch)} Watch Pullback | {len(wl_mints)} Watchlist). Belum ada token yang lolos semua layer.{extra}",
+                f"Scan v5.6 Dual-Track selesai ({len(results)} diaudit | {len(watch)} Watch Pullback | {len(wl_mints)} Watchlist). Belum ada token yang lolos semua layer.{extra}",
                 chat_id,
             )
         else:
-            for audit in ready[:3]:
+            for audit in ready[:4]:
                 await tg.send_message(client, format_entry_alert(audit), chat_id)
         return
 
@@ -278,10 +355,11 @@ async def handle_telegram_command(
         if not audit:
             await tg.send_message(client, "Pair Solana tidak ditemukan di DexScreener.", chat_id)
             return
+        track_badge = "🔵 [JALUR 2 · VETERAN SWING]" if audit.signal_track == "VETERAN_SWING" else "🟢 [JALUR 1 · EARLY MICRO-CAP]"
         summary = (
             format_entry_alert(audit)
             if audit.verdict == "ENTRY_READY"
-            else f"<b>{_esc(audit.verdict)}</b> — ${_esc(audit.pair.symbol)} ({audit.total_score}/100)\n{_esc(audit.headline)}"
+            else f"{track_badge}\n<b>{_esc(audit.verdict)}</b> — ${_esc(audit.pair.symbol)} ({audit.total_score}/100)\n{_esc(audit.headline)}"
         )
         await tg.send_message(client, summary, chat_id)
         return

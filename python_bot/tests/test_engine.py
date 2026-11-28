@@ -2024,7 +2024,275 @@ def test_v55_blocks_late_ath_and_20m_death_pvp_while_preserving_early_and_wlfi_r
     assert audit_7m.verdict == "ENTRY_READY"
 
 
+def test_v56_dual_track_veteran_swing_job_and_separate_alerts() -> None:
+    """v5.6 Dual-Track: Tangkap koin veteran mapan seperti JOB (Breakout #1 & Pullback Reclaim #2) di Jalur 2 terpisah, tolak puncak/koin baru >$850K!"""
+    from bot.scoring import score_and_finalize
+    from bot.structure import evaluate_candle_structure
+    from bot.telegram_notifier import TelegramNotifier, format_entry_alert
 
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.001"},
+        {"outAmount": "99300000", "priceImpactPct": "0.001"},
+        {"outAmount": "10000000", "priceImpactPct": "0.004"},
+        {"outAmount": "988000000", "priceImpactPct": "0.005"},
+        cfg,
+    )
 
+    job_rc = _clean_rugcheck()
+    job_rc["score_normalised"] = 1
+    job_rc["risks"] = []
+    job_rc["totalHolders"] = 7_692
+    job_rc["markets"] = [
+        {
+            "marketType": "pump_fun_amm",
+            "pubkey": "C3J1V8P3h3q7j7z7k3p2t8w4n5m6r1s9x2y3z4a5b6c7",
+            "lp": {"lpLockedPct": 100.0, "lpLockedUSD": 194_920},
+        }
+    ]
+    job_rc["topHolders"] = [
+        {"owner": "C3J1V8P3h3q7j7z7k3p2t8w4n5m6r1s9x2y3z4a5b6c7", "pct": 6.10},
+        {"owner": "11111111111111111111111111111111111111111112", "pct": 1.04},
+        {"owner": "11111111111111111111111111111111111111111113", "pct": 0.92},
+        {"owner": "11111111111111111111111111111111111111111114", "pct": 0.88},
+        {"owner": "11111111111111111111111111111111111111111115", "pct": 0.81},
+        {"owner": "11111111111111111111111111111111111111111116", "pct": 0.78},
+        {"owner": "11111111111111111111111111111111111111111117", "pct": 0.74},
+        {"owner": "11111111111111111111111111111111111111111118", "pct": 0.72},
+        {"owner": "11111111111111111111111111111111111111111119", "pct": 0.71},
+        {"owner": "11111111111111111111111111111111111111111120", "pct": 0.70},
+        {"owner": "11111111111111111111111111111111111111111121", "pct": 0.68},
+    ]
 
+    # --- KASUS 1: JOB Breakout #1 ($1.92M, usia 31 hari, keluar dari kotak konsolidasi $1.55M-$1.86M) ---
+    job_breakout = _make_pair(
+        mint="9Pq7aLAbhDG2tTnS22cm6kuysZVcZpLFE368HWuypump",
+        pair_address="C3J1V8P3h3q7j7z7k3p2t8w4n5m6r1s9x2y3z4a5b6c7",
+        symbol="JOB",
+        name="DogWifJob",
+        market_cap=1_920_000.0,
+        liquidity_usd=135_000.0,
+        vol_m5=6_500.0,
+        vol_h1=48_000.0,
+        vol_h6=165_000.0,
+        vol_h24=390_000.0,
+        buys_m5=58,
+        sells_m5=42,  # 58% buy, $65/tx
+        buys_h1=420,
+        sells_h1=310,  # 57.5% buy
+        buys_h6=1_380,
+        sells_h6=1_120,  # 55.2% buy
+        buys_h24=3_400,
+        sells_h24=2_900,
+        price_change_m5=3.4,
+        price_change_h1=11.5,
+        price_change_h6=18.2,
+        price_change_h24=22.4,
+        pool_count=3,
+        is_boosted=True,  # Boost komunitas aktif — diizinkan khusus Veteran >=7hri LP>=$80K
+        has_socials=True,
+        social_count=2,
+        has_website=True,
+        pair_created_at_ms=now_ms - 31 * 1440 * 60_000,
+        feed_sources=("gecko_trending_24h", "dex_pumpswap"),
+    )
+    # 16 candle 1h: kotak konsolidasi $1.55M-$1.86M (range 20%) dengan Higher-Low lalu breakout ke $1.92M
+    candles_job_b1 = [
+        [i, 1.58e-3, 1.66e-3, 1.55e-3, 1.62e-3, 14_000] for i in range(1, 8)
+    ] + [
+        [i, 1.66e-3, 1.84e-3, 1.64e-3, 1.78e-3, 18_000] for i in range(8, 15)
+    ] + [
+        [15, 1.78e-3, 1.86e-3, 1.75e-3, 1.83e-3, 24_000],
+        [16, 1.83e-3, 1.94e-3, 1.81e-3, 1.92e-3, 48_000],  # Breakout bersih!
+    ]
+    at_b1 = evaluate_anti_top(job_breakout, cfg, now_ms=now_ms)
+    sec_b1 = evaluate_security(job_breakout, job_rc, now_ms=now_ms, require_veteran_swing=at_b1.is_veteran_swing)
+    st_b1 = evaluate_candle_structure(job_breakout, at_b1, [], candles_job_b1, cfg)
+    audit_b1 = score_and_finalize(job_breakout, sec_b1, at_b1, exec_ok, cfg, structure=st_b1)
 
+    assert at_b1.passed and at_b1.is_veteran_swing and at_b1.signal_track == "VETERAN_SWING", f"JOB B1 L2A failed: {[c.detail for c in at_b1.checks if not c.passed]}"
+    assert at_b1.corridor_id == "CORRIDOR_E_VETERAN_SWING"
+    assert sec_b1.passed, f"JOB B1 L1 failed: {[c.detail for c in sec_b1.checks if not c.passed]}"
+    assert st_b1.passed and st_b1.regime == "BULLISH_CONSOLIDATION_BREAKOUT", f"JOB B1 L2B failed: {[c.detail for c in st_b1.checks if not c.passed]}"
+    assert audit_b1.verdict == "ENTRY_READY"
+    assert audit_b1.signal_track == "VETERAN_SWING"
+    assert audit_b1.trade_plan is not None
+    assert audit_b1.trade_plan.hard_stop_pct == 10.0
+    assert audit_b1.trade_plan.tp1_pct == 18.0
+    assert audit_b1.trade_plan.tp2_pct == 35.0
+    msg_b1 = format_entry_alert(audit_b1)
+    assert "[JALUR 2 · VETERAN SWING" in msg_b1
+    assert "MODE KELUAR-MASUK CEPAT" in msg_b1
+    assert "[JALUR 1" not in msg_b1
+
+    # --- KASUS 2: JOB Pullback Reclaim #2 ($2.63M, 24h range lebar 67%, kotak 12h rapi 22%, reclaim hijau +8.3%) ---
+    job_reclaim = _make_pair(
+        mint="9Pq7aLAbhDG2tTnS22cm6kuysZVcZpLFE368HWuypump",
+        pair_address="C3J1V8P3h3q7j7z7k3p2t8w4n5m6r1s9x2y3z4a5b6c7",
+        symbol="JOB",
+        name="DogWifJob",
+        market_cap=2_630_000.0,
+        liquidity_usd=172_000.0,
+        vol_m5=5_800.0,
+        vol_h1=42_000.0,
+        vol_h6=195_000.0,
+        vol_h24=680_000.0,
+        buys_m5=52,
+        sells_m5=40,  # 56.5% buy, $63/tx
+        buys_h1=390,
+        sells_h1=295,  # 56.9% buy
+        buys_h6=1_520,
+        sells_h6=1_350,  # 53.0% buy
+        buys_h24=4_800,
+        sells_h24=4_200,
+        price_change_m5=2.8,
+        price_change_h1=8.3,
+        price_change_h6=18.5,
+        price_change_h24=52.0,
+        pool_count=3,
+        is_boosted=True,
+        has_socials=True,
+        social_count=2,
+        has_website=True,
+        pair_created_at_ms=now_ms - 31 * 1440 * 60_000,
+        feed_sources=("gecko_trending_24h", "dex_pumpswap"),
+    )
+    # 18 candle 1h: gelombang 1 dari $1.71M -> $2.86M (range 24h = 67% > 58%), lalu 12h terakhir pullback sehat ke $2.43M & reclaim ke $2.63M!
+    candles_job_r2 = [
+        [1, 1.72e-3, 1.78e-3, 1.71e-3, 1.76e-3, 15_000],
+        [2, 1.76e-3, 1.96e-3, 1.75e-3, 1.92e-3, 44_000],
+        [3, 1.92e-3, 2.28e-3, 1.90e-3, 2.23e-3, 58_000],
+        [4, 2.23e-3, 2.55e-3, 2.20e-3, 2.48e-3, 49_000],
+        [5, 2.48e-3, 2.86e-3, 2.45e-3, 2.79e-3, 62_000],  # Peak 24h $2.86M
+        [6, 2.79e-3, 2.82e-3, 2.65e-3, 2.68e-3, 28_000],
+        [7, 2.68e-3, 2.74e-3, 2.58e-3, 2.61e-3, 24_000],
+        [8, 2.61e-3, 2.69e-3, 2.50e-3, 2.54e-3, 22_000],
+        [9, 2.54e-3, 2.62e-3, 2.46e-3, 2.58e-3, 25_000],
+        [10, 2.58e-3, 2.64e-3, 2.44e-3, 2.49e-3, 21_000],
+        [11, 2.49e-3, 2.56e-3, 2.41e-3, 2.52e-3, 26_000],
+        [12, 2.52e-3, 2.59e-3, 2.43e-3, 2.46e-3, 19_000],
+        [13, 2.46e-3, 2.52e-3, 2.40e-3, 2.43e-3, 18_000],  # Pullback -15%
+        [14, 2.43e-3, 2.51e-3, 2.41e-3, 2.48e-3, 22_000],  # Hijau
+        [15, 2.48e-3, 2.50e-3, 2.43e-3, 2.44e-3, 16_000],
+        [16, 2.44e-3, 2.55e-3, 2.42e-3, 2.51e-3, 27_000],  # Hijau
+        [17, 2.51e-3, 2.67e-3, 2.49e-3, 2.63e-3, 42_000],  # Reclaim +4.8% (DD -8.0% dari $2.86M)
+    ]
+    at_r2 = evaluate_anti_top(job_reclaim, cfg, now_ms=now_ms)
+    sec_r2 = evaluate_security(job_reclaim, job_rc, now_ms=now_ms, require_veteran_swing=at_r2.is_veteran_swing)
+    st_r2 = evaluate_candle_structure(job_reclaim, at_r2, [], candles_job_r2, cfg)
+    audit_r2 = score_and_finalize(job_reclaim, sec_r2, at_r2, exec_ok, cfg, structure=st_r2)
+
+    assert at_r2.passed and at_r2.is_veteran_swing, f"JOB R2 L2A failed: {[c.detail for c in at_r2.checks if not c.passed]}"
+    assert sec_r2.passed, f"JOB R2 L1 failed: {[c.detail for c in sec_r2.checks if not c.passed]}"
+    assert st_r2.passed and st_r2.regime == "PULLBACK_RECLAIM", f"JOB R2 L2B failed: {[c.detail for c in st_r2.checks if not c.passed]}"
+    assert audit_r2.verdict == "ENTRY_READY"
+    assert audit_r2.signal_track == "VETERAN_SWING"
+
+    # --- KASUS 3: JOB Titik Exhausted Live ($3.20M, 24h +77.3%, 5m -0.16%, Vol5m $1,866) -> WAJIB DITOLAK / BUKAN ENTRY! ---
+    job_peak_exhausted = _make_pair(
+        mint="9Pq7aLAbhDG2tTnS22cm6kuysZVcZpLFE368HWuypump",
+        symbol="JOB",
+        market_cap=3_200_000.0,
+        liquidity_usd=194_920.0,
+        vol_m5=1_866.0,
+        vol_h1=45_000.0,
+        vol_h6=240_000.0,
+        vol_h24=910_000.0,
+        buys_m5=18,
+        sells_m5=20,
+        buys_h1=320,
+        sells_h1=280,
+        buys_h6=1_800,
+        sells_h6=1_600,
+        buys_h24=5_400,
+        sells_h24=4_600,
+        price_change_m5=-0.16,
+        price_change_h1=19.5,
+        price_change_h6=42.0,
+        price_change_h24=77.3,
+        pair_created_at_ms=now_ms - 31 * 1440 * 60_000,
+    )
+    at_peak = evaluate_anti_top(job_peak_exhausted, cfg, now_ms=now_ms)
+    assert not at_peak.passed
+    assert any(c.id == "pre_ath_extension" and not c.passed for c in at_peak.checks)
+    assert any(c.id == "parabolic_cap" and not c.passed for c in at_peak.checks)
+    assert any(c.id == "orderflow_quality" and not c.passed for c in at_peak.checks)
+
+    # --- KASUS 4: Koin baru usia 2 hari (< 7 hari) di MC $1.9M -> WAJIB HARD VETO Late-Stage Top, TIDAK bocor ke Jalur 2! ---
+    young_midcap = _make_pair(
+        symbol="YOUNG2M",
+        market_cap=1_900_000.0,
+        liquidity_usd=140_000.0,
+        vol_m5=15_000.0,
+        vol_h1=120_000.0,
+        vol_h24=600_000.0,
+        price_change_m5=4.0,
+        price_change_h1=12.0,
+        price_change_h6=18.0,
+        price_change_h24=25.0,
+        pair_created_at_ms=now_ms - 2 * 1440 * 60_000,
+    )
+    at_young = evaluate_anti_top(young_midcap, cfg, now_ms=now_ms)
+    assert not at_young.passed and not at_young.wait_dip_only
+    assert not at_young.is_veteran_swing
+    assert at_young.signal_track == "EARLY_MICROCAP"
+    assert any(c.id == "entry_corridor" and not c.passed and "Usia < 7 Hari" in c.detail for c in at_young.checks)
+
+    # --- KASUS 5: Veteran Whale/Cabal (Top1 = 6.0% atau Holders = 900) -> WAJIB VETO di Layer 1! ---
+    bad_vet_rc = dict(job_rc)
+    bad_vet_rc["topHolders"] = [
+        {"owner": "C3J1V8P3h3q7j7z7k3p2t8w4n5m6r1s9x2y3z4a5b6c7", "pct": 6.10},
+        {"owner": "11111111111111111111111111111111111111111112", "pct": 6.00},  # > 3.5% Veteran limit!
+    ] + job_rc["topHolders"][2:]
+    sec_whale = evaluate_security(job_breakout, bad_vet_rc, now_ms=now_ms, require_veteran_swing=True)
+    assert not sec_whale.passed
+    assert any(c.id == "pareto_distribution" and not c.passed for c in sec_whale.checks)
+
+    thin_vet_rc = dict(job_rc)
+    thin_vet_rc["totalHolders"] = 900  # < 2,500 Veteran limit!
+    sec_thin = evaluate_security(job_breakout, thin_vet_rc, now_ms=now_ms, require_veteran_swing=True)
+    assert not sec_thin.passed
+    assert any(c.id == "organic_holders" and not c.passed for c in sec_thin.checks)
+
+    # --- KASUS 6: Track 1 Alert tetap [JALUR 1 ...] & Routing Chat Terpisah (TELEGRAM_SWING_CHAT_ID) ---
+    early_pair = _make_pair(
+        symbol="TRACK1",
+        market_cap=68_000.0,
+        liquidity_usd=18_500.0,
+        vol_m5=16_000.0,
+        vol_h1=70_000.0,
+        vol_h24=70_000.0,
+        buys_m5=150,
+        sells_m5=95,
+        buys_h1=620,
+        sells_h1=400,
+        buys_h24=620,
+        sells_h24=400,
+        price_change_m5=8.0,
+        price_change_h1=65.0,
+        price_change_h24=65.0,
+        pool_count=2,
+        pair_created_at_ms=now_ms - 25 * 60_000,
+    )
+    t1_rc = _clean_rugcheck()
+    t1_rc["score_normalised"] = 1
+    t1_rc["totalHolders"] = 650
+    at_t1 = evaluate_anti_top(early_pair, cfg, now_ms=now_ms)
+    sec_t1 = evaluate_security(early_pair, t1_rc, now_ms=now_ms)
+    audit_t1 = score_and_finalize(early_pair, sec_t1, at_t1, exec_ok, cfg)
+    assert audit_t1.verdict == "ENTRY_READY"
+    assert audit_t1.signal_track == "EARLY_MICROCAP"
+    msg_t1 = format_entry_alert(audit_t1)
+    assert "[JALUR 1" in msg_t1
+    assert "[JALUR 2" not in msg_t1
+
+    cfg_split = BotConfig(telegram_bot_token="tok", telegram_chat_id="111", telegram_swing_chat_id="222")
+    tg_split = TelegramNotifier(cfg_split)
+    assert tg_split.target_chat_for_audit(audit_t1) == "111"
+    assert tg_split.target_chat_for_audit(audit_b1) == "222"
+
+    cfg_single = BotConfig(telegram_bot_token="tok", telegram_chat_id="111", telegram_swing_chat_id="")
+    tg_single = TelegramNotifier(cfg_single)
+    assert tg_single.target_chat_for_audit(audit_t1) == "111"
+    assert tg_single.target_chat_for_audit(audit_b1) == "111"

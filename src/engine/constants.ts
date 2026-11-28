@@ -118,6 +118,21 @@ export const ENTRY_CORRIDORS: CorridorDefinition[] = [
     tp1GainPct: 35,
     tp2GainPct: 85,
   },
+  {
+    id: 'E_VETERAN_SWING',
+    label: 'Jalur 2 · Veteran Swing ($850K–$10M · Usia >= 7 Hari)',
+    minMc: 850_000,
+    maxMc: 10_000_000,
+    nextWallMc: 13_500_000,
+    minLiqUsd: 80_000,
+    minLiqMcRatioPct: 4.5,
+    minTx24h: 150,
+    minAvgTicketM5Usd: 35.0,
+    minHolders: 2_500,
+    defaultStopLossPct: 10,
+    tp1GainPct: 18,
+    tp2GainPct: 35,
+  },
 ];
 
 export const TEST_BUY_LAMPORTS = 100_000_000; // 0.1 SOL

@@ -65,6 +65,7 @@ ORGANIC_FEED_SOURCES: frozenset[str] = frozenset(
         "gecko_trending_1h",
         "gecko_trending_1h_p2",
         "gecko_trending_6h",
+        "gecko_trending_24h",
         "dex_pumpswap",
         "dex_meteora",
         "dex_raydium",
@@ -127,6 +128,16 @@ ENTRY_CORRIDORS: tuple[EntryCorridor, ...] = (
         default_tp1_pct=35.0,
         default_tp2_pct=85.0,
     ),
+    EntryCorridor(
+        corridor_id="CORRIDOR_E_VETERAN_SWING",
+        label="Corridor E (Veteran Swing $850K–$10M · Usia >= 7 Hari)",
+        min_mc=850_000.0,
+        max_mc=10_000_000.0,
+        ceiling_mc=13_500_000.0,
+        default_hard_stop_pct=10.0,
+        default_tp1_pct=18.0,
+        default_tp2_pct=35.0,
+    ),
 )
 
 
@@ -161,6 +172,7 @@ def _env_bool(key: str, default: bool) -> bool:
 class BotConfig:
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    telegram_swing_chat_id: str = ""
     telegram_webhook_secret: str = ""
     cron_secret: str = ""
     jupiter_api_key: str = ""
@@ -219,6 +231,7 @@ class BotConfig:
         return cls(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+            telegram_swing_chat_id=os.getenv("TELEGRAM_SWING_CHAT_ID", "").strip(),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
             cron_secret=os.getenv("CRON_SECRET", "").strip(),
             jupiter_api_key=os.getenv("JUPITER_API_KEY", "").strip(),

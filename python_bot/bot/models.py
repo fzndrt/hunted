@@ -8,6 +8,7 @@ from typing import Literal, Optional
 LayerName = Literal["SECURITY", "ANTI_TOP", "STRUCTURE", "EXECUTION"]
 CheckSeverity = Literal["PASS", "WAIT_DIP", "VETO"]
 Verdict = Literal["ENTRY_READY", "WATCH_PULLBACK", "REJECTED"]
+SignalTrack = Literal["EARLY_MICROCAP", "VETERAN_SWING"]
 StructureRegime = Literal[
     "CONTINUATION_BREAKOUT",
     "PULLBACK_RECLAIM",
@@ -137,6 +138,8 @@ class AntiTopResult:
     is_hyper_viral_fasttrack: bool = False
     is_steady_organic_climber: bool = False
     has_community_presence: bool = False
+    is_veteran_swing: bool = False
+    signal_track: SignalTrack = "EARLY_MICROCAP"
 
 
 @dataclass(frozen=True)
@@ -204,6 +207,7 @@ class AuditResult:
     trade_plan: Optional[TradePlan]
     audited_at_ms: int
     structure: Optional[StructureResult] = None
+    signal_track: SignalTrack = "EARLY_MICROCAP"
 
 
 @dataclass

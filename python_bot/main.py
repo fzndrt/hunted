@@ -44,7 +44,7 @@ async def scanner_loop(
                 if w.security.passed:
                     await store.add_watchlist_mint(w.pair.mint, ttl_minutes=120)
             logger.info(
-                "Scan v4.1 selesai: %d diaudit | %d ENTRY_READY | %d WATCH | wl=%d | feeds=%s",
+                "Scan v5.6 Dual-Track selesai: %d diaudit | %d ENTRY_READY | %d WATCH | wl=%d | feeds=%s",
                 len(results),
                 len(ready),
                 len(watch),
@@ -52,19 +52,27 @@ async def scanner_loop(
                 ",".join(notes),
             )
             for audit in ready:
+                alert_kind = "VETERAN_SWING" if audit.signal_track == "VETERAN_SWING" else "ENTRY_READY"
+                target_chat = tg.target_chat_for_audit(audit)
                 if await store.should_send_alert(
-                    audit.pair.mint, "ENTRY_READY", cfg.alert_cooldown_min
+                    audit.pair.mint, alert_kind, cfg.alert_cooldown_min
                 ):
                     msg = format_entry_alert(audit)
                     if tg.enabled:
-                        sent = await tg.send_message(client, msg)
+                        sent = await tg.send_message(client, msg, chat_id=target_chat)
                         if sent:
                             await store.remove_watchlist_mint(audit.pair.mint)
                         else:
-                            await store.release_alert_cooldown(audit.pair.mint, "ENTRY_READY")
+                            await store.release_alert_cooldown(audit.pair.mint, alert_kind)
                     else:
                         await store.remove_watchlist_mint(audit.pair.mint)
-                        logger.info("ENTRY READY: $%s (%s) score=%d", audit.pair.symbol, audit.pair.mint, audit.total_score)
+                        logger.info(
+                            "ENTRY READY [%s]: $%s (%s) score=%d",
+                            audit.signal_track,
+                            audit.pair.symbol,
+                            audit.pair.mint,
+                            audit.total_score,
+                        )
         except Exception as exc:
             logger.exception("Error siklus scanner: %s", exc)
 

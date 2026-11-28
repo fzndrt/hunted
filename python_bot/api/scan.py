@@ -57,18 +57,20 @@ async def execute_scan_and_exit_guard(cfg: BotConfig) -> dict:
     alert_diagnostics: list[dict] = []
 
     async with httpx.AsyncClient(
-        headers={"User-Agent": "CorridorDeskVercel/4.1"},
+        headers={"User-Agent": "CorridorDeskVercel/5.6"},
         follow_redirects=False,
     ) as client:
         # 1. Tarik Watchlist Auto-Rescan (koin lolos L1 Security yang sempat WAIT_DIP 2 jam terakhir)
         watchlist_mints = await store.list_watchlist_mints(limit=15)
 
-        # 2. Jalankan siklus pemindaian 9-feed + Watchlist (Intraday Viral + Steady Climber + Daily Consolidation)
+        # 2. Jalankan siklus pemindaian Dual-Track (Jalur 1 Early Micro-Cap + Jalur 2 Veteran Swing)
         results, feed_notes = await run_scan_cycle(
             client, cfg, max_stage2=12, watchlist_mints=watchlist_mints
         )
         ready = [r for r in results if r.verdict == "ENTRY_READY"]
         watch = [r for r in results if r.verdict == "WATCH_PULLBACK"]
+        early_ready = [r for r in ready if r.signal_track == "EARLY_MICROCAP"]
+        veteran_ready = [r for r in ready if r.signal_track == "VETERAN_SWING"]
 
         # Simpan kandidat WATCH_PULLBACK yang SUDAH lolos Layer 1 Security ke Watchlist 2 jam
         for w in watch:
@@ -76,34 +78,51 @@ async def execute_scan_and_exit_guard(cfg: BotConfig) -> dict:
                 await store.add_watchlist_mint(w.pair.mint, ttl_minutes=120)
 
         for audit in ready:
+            alert_kind = "VETERAN_SWING" if audit.signal_track == "VETERAN_SWING" else "ENTRY_READY"
+            target_chat = tg.target_chat_for_audit(audit)
             if not tg.enabled:
                 alert_diagnostics.append(
-                    {"symbol": audit.pair.symbol, "status": "skipped_telegram_disabled"}
+                    {
+                        "symbol": audit.pair.symbol,
+                        "signal_track": audit.signal_track,
+                        "status": "skipped_telegram_disabled",
+                    }
                 )
                 continue
             if await store.should_send_alert(
-                audit.pair.mint, "ENTRY_READY", cfg.alert_cooldown_min
+                audit.pair.mint, alert_kind, cfg.alert_cooldown_min
             ):
-                sent = await tg.send_message(client, format_entry_alert(audit))
+                sent = await tg.send_message(
+                    client, format_entry_alert(audit), chat_id=target_chat
+                )
                 if sent:
                     alerts_sent += 1
                     await store.remove_watchlist_mint(audit.pair.mint)
                     alert_diagnostics.append(
-                        {"symbol": audit.pair.symbol, "status": "sent"}
+                        {
+                            "symbol": audit.pair.symbol,
+                            "signal_track": audit.signal_track,
+                            "status": "sent",
+                        }
                     )
                 else:
                     # Batalkan cooldown agar bisa dicoba ulang di siklus berikutnya
-                    await store.release_alert_cooldown(audit.pair.mint, "ENTRY_READY")
+                    await store.release_alert_cooldown(audit.pair.mint, alert_kind)
                     alert_diagnostics.append(
                         {
                             "symbol": audit.pair.symbol,
+                            "signal_track": audit.signal_track,
                             "status": "telegram_failed",
                             "reason": tg.last_error or "unknown",
                         }
                     )
             else:
                 alert_diagnostics.append(
-                    {"symbol": audit.pair.symbol, "status": "skipped_cooldown"}
+                    {
+                        "symbol": audit.pair.symbol,
+                        "signal_track": audit.signal_track,
+                        "status": "skipped_cooldown",
+                    }
                 )
 
         # 3. Jalankan Exit Guard untuk seluruh posisi aktif dalam invocation yang sama
@@ -131,13 +150,15 @@ async def execute_scan_and_exit_guard(cfg: BotConfig) -> dict:
 
     return {
         "ok": True,
-        "engine_version": "4.1",
+        "engine_version": "5.6",
         "storage_mode": getattr(store, "mode", "sqlite"),
         "telegram_enabled": tg.enabled,
         "telegram_last_error": tg.last_error or None,
         "watchlist_rescanned": len(watchlist_mints),
         "audited": len(results),
         "entry_ready": len(ready),
+        "early_microcap_ready": len(early_ready),
+        "veteran_swing_ready": len(veteran_ready),
         "watch_pullback": len(watch),
         "entry_alerts_sent": alerts_sent,
         "alert_diagnostics": alert_diagnostics,
@@ -150,11 +171,13 @@ async def execute_scan_and_exit_guard(cfg: BotConfig) -> dict:
                 "symbol": r.pair.symbol,
                 "mint": r.pair.mint,
                 "score": r.total_score,
+                "signal_track": r.signal_track,
                 "sleeper_revival": r.anti_top.is_sleeper_revival,
                 "hyper_viral_fasttrack": r.anti_top.is_hyper_viral_fasttrack,
                 "steady_climber": r.anti_top.is_steady_organic_climber,
+                "veteran_swing": r.anti_top.is_veteran_swing,
             }
-            for r in ready[:5]
+            for r in ready[:6]
         ],
     }
 

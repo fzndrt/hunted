@@ -95,7 +95,7 @@ export async function auditSinglePair(
     evaluateExecutionLayer(mint, cfg),
   ]);
 
-  const security = evaluateSecurityLayer(pair, rugData, minHolders);
+  const security = evaluateSecurityLayer(pair, rugData, minHolders, Boolean(antiTop.metrics.isVeteranSwing));
   const { verdict, verdictHeadline, totalScore, pillars, tradePlan } = computeScoreAndVerdict(
     security,
     antiTop,
@@ -120,6 +120,7 @@ export async function auditSinglePair(
     tradePlan,
     links: buildTokenLinks(mint, pairAddress),
     auditedAt: Date.now(),
+    signalTrack: antiTop.metrics.signalTrack ?? 'EARLY_MICROCAP',
   };
 }
 
@@ -198,15 +199,20 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=2',
       4000
     );
-    await new Promise((r) => setTimeout(r, 450));
+    await new Promise((r) => setTimeout(r, 400));
     const gt6h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
       'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1',
       4000
     );
-    return [gt5m, gt5mP2, gt1h, gt1hP2, gt6h] as const;
+    await new Promise((r) => setTimeout(r, 400));
+    const gt24h = await fetchJsonWithTimeout<{ data?: Array<Record<string, unknown>> }>(
+      'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=24h&page=1',
+      4000
+    );
+    return [gt5m, gt5mP2, gt1h, gt1hP2, gt6h, gt24h] as const;
   };
 
-  const [[gt5m, gt5mP2, gt1h, gt1hP2, gt6h], dsPump, dsMet, dsRay, dsCto, dsProfiles] = await Promise.all([
+  const [[gt5m, gt5mP2, gt1h, gt1hP2, gt6h, gt24h], dsPump, dsMet, dsRay, dsCto, dsProfiles] = await Promise.all([
     fetchGeckoStaggered(),
     fetchJsonWithTimeout<{ pairs?: DexPairLike[] }>(
       'https://api.dexscreener.com/latest/dex/search?q=pumpswap',
@@ -262,6 +268,7 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
   extractGtMints(gt1h, 'GeckoTerminal 1h Revival');
   extractGtMints(gt1hP2, 'GeckoTerminal 1h Page 2');
   extractGtMints(gt6h, 'GeckoTerminal 6h Daily Consolidation');
+  extractGtMints(gt24h, 'GeckoTerminal 24h Veteran Swing');
 
   for (const [searchPayload, label] of [
     [dsPump, 'DexScreener PumpSwap'],
@@ -343,9 +350,13 @@ export async function runLiveCleanScan(partialCfg?: Partial<ScanConfig>): Promis
     // Must have verified hard quote, basic liquidity, and sit in early-to-viral-base range ($18K–$900K)
     if (!VERIFIED_HARD_QUOTE_MINTS[quoteMint]) continue;
     const volH1 = Number(best.volume?.h1) || 0;
+    const createdAt = Number(best.pairCreatedAt) || 0;
+    const ageMin = createdAt > 0 ? Math.max(1, (Date.now() - createdAt) / 60_000) : 60;
     const inBasicRange = mc >= 18_000 && mc <= 450_000 && liq >= 7_500;
     const inViralBaseD = mc > 450_000 && mc <= 900_000 && volH1 >= 220_000 && liq >= 38_000;
-    if (!inBasicRange && !inViralBaseD) continue;
+    const inVeteranSwing =
+      mc >= 850_000 && mc <= 10_000_000 && ageMin >= 10_080 && liq >= 80_000 && volH1 >= 18_000;
+    if (!inBasicRange && !inViralBaseD && !inVeteranSwing) continue;
 
     const s1 = evaluateAntiTopLayer(best, cfg);
     // Prioritize Sleeper Revival + tokens that pass AntiTop or are clean pullback-watch candidates

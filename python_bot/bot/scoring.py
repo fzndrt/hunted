@@ -37,24 +37,28 @@ def build_trade_plan(
         ENTRY_CORRIDORS[0],
     )
     base_mc = max(anti_top.projected_entry_mc, anti_top.spot_mc, 1.0)
-    max_safe_entry_mc = min(corridor.max_mc, base_mc * 1.08)
-
-    is_daily_breakout = (
-        structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT"
-    ) or anti_top.is_sleeper_revival
-
-    # Untuk Daily Consolidation Breakout / Sleeper Revival: target TP terukur sebelum resistensi ATH lama
-    if is_daily_breakout:
-        if corridor.corridor_id == "CORRIDOR_A_EARLY":
-            sl_pct, tp1_pct, tp2_pct = 15.0, 30.0, 65.0
-        elif corridor.corridor_id == "CORRIDOR_B_POST100K":
-            sl_pct, tp1_pct, tp2_pct = 14.0, 28.0, 60.0
-        else:
-            sl_pct, tp1_pct, tp2_pct = 12.0, 25.0, 50.0
+    if anti_top.is_veteran_swing:
+        # Jalur 2 (Veteran Swing): keluar-masuk disiplin puluhan persen (SL -10%, TP1 +18%, TP2 +35%)
+        max_safe_entry_mc = min(corridor.max_mc, base_mc * 1.04)
+        sl_pct, tp1_pct, tp2_pct = 10.0, 18.0, 35.0
     else:
-        sl_pct = corridor.default_hard_stop_pct
-        tp1_pct = corridor.default_tp1_pct
-        tp2_pct = corridor.default_tp2_pct
+        max_safe_entry_mc = min(corridor.max_mc, base_mc * 1.08)
+        is_daily_breakout = (
+            structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT"
+        ) or anti_top.is_sleeper_revival
+
+        # Untuk Daily Consolidation Breakout / Sleeper Revival: target TP terukur sebelum resistensi ATH lama
+        if is_daily_breakout:
+            if corridor.corridor_id == "CORRIDOR_A_EARLY":
+                sl_pct, tp1_pct, tp2_pct = 15.0, 30.0, 65.0
+            elif corridor.corridor_id == "CORRIDOR_B_POST100K":
+                sl_pct, tp1_pct, tp2_pct = 14.0, 28.0, 60.0
+            else:
+                sl_pct, tp1_pct, tp2_pct = 12.0, 25.0, 50.0
+        else:
+            sl_pct = corridor.default_hard_stop_pct
+            tp1_pct = corridor.default_tp1_pct
+            tp2_pct = corridor.default_tp2_pct
 
     return TradePlan(
         corridor_label=corridor.label,
@@ -90,8 +94,13 @@ def score_and_finalize(
             p1 += 3
         elif (security.dev_pct or 100.0) <= 2.0:
             p1 += 2
-        # Densitas Holder (Anti-Hollow-Shell): raksasa sejati (mihao $72/H, STONK $94/H, PAIR $65/H, duk $93/H)
-        if 0.0 < security.mc_per_holder_usd <= 130.0:
+        # Densitas Holder (Anti-Hollow-Shell)
+        if anti_top.is_veteran_swing:
+            if 0.0 < security.mc_per_holder_usd <= 500.0 and security.total_holders >= 2_500 and (security.top10_pct or 100.0) <= 15.0:
+                p1 += 4
+            elif 0.0 < security.mc_per_holder_usd <= 650.0:
+                p1 += 3
+        elif 0.0 < security.mc_per_holder_usd <= 130.0:
             p1 += 4
         elif 0.0 < security.mc_per_holder_usd <= 210.0:
             p1 += 3
@@ -107,11 +116,11 @@ def score_and_finalize(
         p1 = sum(2 for c in security.checks if c.passed)
         p1 = min(p1, 10)
 
-    # Pilar 2: Posisi Entry (Corridor A–D) & Headroom (20 poin)
+    # Pilar 2: Posisi Entry (Corridor A–E) & Headroom (20 poin)
     p2 = 0
     if anti_top.corridor_id == "CORRIDOR_A_EARLY":
         p2 += 11
-    elif anti_top.corridor_id == "CORRIDOR_B_POST100K":
+    elif anti_top.corridor_id in {"CORRIDOR_B_POST100K", "CORRIDOR_E_VETERAN_SWING"}:
         p2 += 10
     elif anti_top.corridor_id in {"CORRIDOR_C_EXPANSION", "CORRIDOR_D_VIRAL_BASE"}:
         p2 += 9
@@ -124,36 +133,54 @@ def score_and_finalize(
 
     # Pilar 3: Momentum Hijau, Dominasi Buyer & Viral Demand Velocity (25 poin)
     p3 = 0
-    if 1.5 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
-        p3 += 6
-    elif 0.0 <= anti_top.p_m5 < 1.5:
-        p3 += 4
-    elif -1.5 <= anti_top.p_m5 < 0.0 and anti_top.is_viral_velocity:
-        p3 += 3
-    if anti_top.buy_ratio_5m_pct >= 56.0 or anti_top.whale_absorption:
-        p3 += 6
-    elif anti_top.buy_ratio_5m_pct >= 52.0:
-        p3 += 4
-    if (
-        anti_top.is_viral_velocity
-        or anti_top.vol_m5_accel_ratio >= 1.15
-        or anti_top.turnover_h1_ratio >= 1.0
-    ):
-        p3 += 7
-    elif (
-        anti_top.is_pullback_contraction_ok
-        or anti_top.vol_m5_accel_ratio >= 0.75
-        or anti_top.turnover_h1_ratio >= 0.45
-    ):
-        p3 += 5
-    elif anti_top.turnover_h1_ratio >= cfg.min_turnover_h1_ratio:
-        p3 += 3
-    if anti_top.avg_ticket_5m_usd >= 60.0 or anti_top.avg_ticket_1h_usd >= 60.0:
-        p3 += 6
-    elif anti_top.avg_ticket_5m_usd >= 32.0 or anti_top.avg_ticket_1h_usd >= 32.0:
-        p3 += 4
-    elif anti_top.avg_ticket_5m_usd >= 22.0 or anti_top.avg_ticket_1h_usd >= 22.0:
-        p3 += 2
+    if anti_top.is_veteran_swing:
+        if 0.8 <= anti_top.p_m5 <= 12.0:
+            p3 += 6
+        elif 0.0 <= anti_top.p_m5 < 0.8:
+            p3 += 4
+        if anti_top.buy_ratio_5m_pct >= 55.0 or anti_top.buy_ratio_1h_pct >= 55.0:
+            p3 += 6
+        elif anti_top.buy_ratio_5m_pct >= 52.0 and anti_top.buy_ratio_1h_pct >= 53.0:
+            p3 += 4
+        if pair.vol_h1 >= 35_000.0 or anti_top.vol_wake_5m_ratio >= 1.8:
+            p3 += 7
+        elif pair.vol_h1 >= 18_000.0 and pair.vol_m5 >= 2_500.0:
+            p3 += 5
+        if anti_top.avg_ticket_5m_usd >= 60.0 or anti_top.avg_ticket_1h_usd >= 60.0:
+            p3 += 6
+        elif anti_top.avg_ticket_5m_usd >= 35.0 or anti_top.avg_ticket_1h_usd >= 30.0:
+            p3 += 4
+    else:
+        if 1.5 <= anti_top.p_m5 <= cfg.max_m5_change_pct:
+            p3 += 6
+        elif 0.0 <= anti_top.p_m5 < 1.5:
+            p3 += 4
+        elif -1.5 <= anti_top.p_m5 < 0.0 and anti_top.is_viral_velocity:
+            p3 += 3
+        if anti_top.buy_ratio_5m_pct >= 56.0 or anti_top.whale_absorption:
+            p3 += 6
+        elif anti_top.buy_ratio_5m_pct >= 52.0:
+            p3 += 4
+        if (
+            anti_top.is_viral_velocity
+            or anti_top.vol_m5_accel_ratio >= 1.15
+            or anti_top.turnover_h1_ratio >= 1.0
+        ):
+            p3 += 7
+        elif (
+            anti_top.is_pullback_contraction_ok
+            or anti_top.vol_m5_accel_ratio >= 0.75
+            or anti_top.turnover_h1_ratio >= 0.45
+        ):
+            p3 += 5
+        elif anti_top.turnover_h1_ratio >= cfg.min_turnover_h1_ratio:
+            p3 += 3
+        if anti_top.avg_ticket_5m_usd >= 60.0 or anti_top.avg_ticket_1h_usd >= 60.0:
+            p3 += 6
+        elif anti_top.avg_ticket_5m_usd >= 32.0 or anti_top.avg_ticket_1h_usd >= 32.0:
+            p3 += 4
+        elif anti_top.avg_ticket_5m_usd >= 22.0 or anti_top.avg_ticket_1h_usd >= 22.0:
+            p3 += 2
 
     # Pilar 4: Likuiditas & Kedalaman Jupiter (15 poin)
     p4 = 0
@@ -170,10 +197,16 @@ def score_and_finalize(
             p4 += 4
         else:
             p4 += 3
-        if anti_top.liq_mc_ratio_pct >= 14.0:
-            p4 += 3
-        elif anti_top.liq_mc_ratio_pct >= 9.0:
-            p4 += 2
+        if anti_top.is_veteran_swing:
+            if anti_top.liq_usd >= 120_000.0 or anti_top.liq_mc_ratio_pct >= 6.0:
+                p4 += 3
+            elif anti_top.liq_usd >= 80_000.0:
+                p4 += 2
+        else:
+            if anti_top.liq_mc_ratio_pct >= 14.0:
+                p4 += 3
+            elif anti_top.liq_mc_ratio_pct >= 9.0:
+                p4 += 2
 
     # Pilar 5: Chart OHLCV Above-VWAP, Komunitas & Smart LP Organik (15 poin)
     from .config import ORGANIC_FEED_SOURCES
@@ -181,7 +214,11 @@ def score_and_finalize(
     organic_feeds_count = sum(1 for s in pair.feed_sources if s in ORGANIC_FEED_SOURCES)
     total_pools = max(int(pair.pool_count or 1), int(security.active_markets_count or 1))
     chart_pts = 0
-    if structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
+    if anti_top.is_veteran_swing and structure is not None and structure.passed:
+        chart_pts = 6
+        age_days = anti_top.age_minutes / 1440.0
+        p5_summary = f"VETERAN SWING ({age_days:.0f}hri · {structure.regime} · GreenVol {structure.green_vol_share_pct:.0f}%)"
+    elif structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
         chart_pts = 6
         age_days = anti_top.age_minutes / 1440.0
         p5_summary = f"DAILY BREAKOUT ({age_days:.1f}hri · Box {structure.base_range_pct:.0f}% · GreenVol {structure.green_vol_share_pct:.0f}%)"
@@ -211,7 +248,7 @@ def score_and_finalize(
         dna_pts += 2
     if total_pools >= 2:
         dna_pts += 2
-    if not pair.is_boosted:
+    if not pair.is_boosted or anti_top.is_veteran_swing:
         dna_pts += 1
     p5 = min(15, chart_pts + min(9, dna_pts))
 
@@ -257,7 +294,14 @@ def score_and_finalize(
     elif anti_top.passed and structure_ok and execution.passed and total_score >= cfg.min_score:
         verdict = "ENTRY_READY"
         trade_plan = build_trade_plan(anti_top, structure)
-        if structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
+        if anti_top.is_veteran_swing:
+            age_days = anti_top.age_minutes / 1440.0
+            regime_tag = structure.regime if structure else "SWING_BREAKOUT"
+            headline = (
+                f"[JALUR 2 · VETERAN SWING] ({total_score}/100 · Usia {age_days:.0f} hari · {regime_tag}) — "
+                f"Keluar-masuk cepat TP1 +{trade_plan.tp1_pct:.0f}% / TP2 +{trade_plan.tp2_pct:.0f}%, SL -{trade_plan.hard_stop_pct:.0f}%."
+            )
+        elif structure is not None and structure.regime == "BULLISH_CONSOLIDATION_BREAKOUT":
             age_days = anti_top.age_minutes / 1440.0
             headline = (
                 f"DAILY CONSOLIDATION BREAKOUT ({total_score}/100 · Usia {age_days:.1f} hari · Box {structure.base_range_pct:.0f}%) — "
@@ -312,4 +356,5 @@ def score_and_finalize(
         trade_plan=trade_plan,
         audited_at_ms=int(time.time() * 1000),
         structure=structure,
+        signal_track=anti_top.signal_track,
     )

@@ -581,14 +581,26 @@ def _evaluate_daily_consolidation_ohlcv(
 
     if len(candles_1h) < 8:
         # Fallback jika data 1h belum cukup: cek multi-timeframe 6h/1h/5m
-        bullish_snap = (
-            anti_top.buy_ratio_6h_pct >= 51.0
-            and anti_top.buy_ratio_1h_pct >= 51.0
-            and anti_top.p_h6 >= -10.0
-            and anti_top.p_h6 <= 65.0
-            and anti_top.p_m5 >= 1.5
-            and anti_top.vol_wake_5m_ratio >= 2.5
-        )
+        if anti_top.is_veteran_swing:
+            bullish_snap = (
+                anti_top.buy_ratio_6h_pct >= 50.0
+                and anti_top.buy_ratio_1h_pct >= 53.0
+                and anti_top.buy_ratio_5m_pct >= 52.0
+                and anti_top.p_m5 >= 1.0
+                and anti_top.p_h1 >= 2.5
+                and -5.0 <= anti_top.p_h6 <= 35.0
+                and anti_top.p_h24 <= 65.0
+                and pair.vol_h1 >= 25_000.0
+            )
+        else:
+            bullish_snap = (
+                anti_top.buy_ratio_6h_pct >= 51.0
+                and anti_top.buy_ratio_1h_pct >= 51.0
+                and anti_top.p_h6 >= -10.0
+                and anti_top.p_h6 <= 65.0
+                and anti_top.p_m5 >= 1.5
+                and anti_top.vol_wake_5m_ratio >= 2.5
+            )
         bearish_snap = anti_top.buy_ratio_6h_pct < 47.0 or anti_top.p_h6 < -18.0
         checks.append(
             GateCheck(
@@ -598,7 +610,11 @@ def _evaluate_daily_consolidation_ohlcv(
                 passed=bullish_snap,
                 severity="PASS" if bullish_snap else ("VETO" if bearish_snap else "WAIT_DIP"),
                 actual=f"6h {anti_top.p_h6:+.1f}% ({anti_top.buy_ratio_6h_pct:.0f}% buy) · Wake {anti_top.vol_wake_5m_ratio:.1f}x",
-                threshold="6h buy>=51%, 6h [-10%,+65%], Vol Wake>=2.5x",
+                threshold=(
+                    "Veteran Swing: 6hBuy>=50%, 1hBuy>=53%, 1h>=+2.5%, 24h<=+65%, Vol1h>=$25K"
+                    if anti_top.is_veteran_swing
+                    else "6h buy>=51%, 6h [-10%,+65%], Vol Wake>=2.5x"
+                ),
                 detail=(
                     "Konsolidasi harian bangun (terverifikasi multi-timeframe snapshot)."
                     if bullish_snap
@@ -628,6 +644,7 @@ def _evaluate_daily_consolidation_ohlcv(
     base = candles_1h[:-1]
     latest = candles_1h[-1]
     current_close = latest[4]
+    latest_1h_body_pct = ((latest[4] - latest[1]) / latest[1] * 100.0) if latest[1] > 0 else 0.0
 
     base_highs = [c[2] for c in base]
     base_lows = [c[3] for c in base]
@@ -638,6 +655,7 @@ def _evaluate_daily_consolidation_ohlcv(
     base_range_pct = ((base_high - base_low) / base_low * 100.0) if base_low > 0 else 999.0
     box_span = max(base_high - base_low, 1e-12)
     range_position_pct = (current_close - base_low) / box_span * 100.0
+    dd_from_24h_peak_pct = max(0.0, (base_high - current_close) / base_high * 100.0) if base_high > 0 else 0.0
 
     # Belah base menjadi paruh pertama vs paruh kedua untuk mendeteksi Ascending Base vs Descending Trap
     mid = len(base) // 2
@@ -652,14 +670,18 @@ def _evaluate_daily_consolidation_ohlcv(
     lower_high_trap = first_high > 0 and second_high < first_high * 0.90
     support_broken = base_low > 0 and current_close < base_low * 0.99
 
-    # Dominasi volume hijau vs merah pada 8 jam terakhir (Akumulasi vs Distribusi!)
+    # Dominasi volume hijau vs merah pada 8 jam & 4 jam terakhir (Akumulasi vs Distribusi!)
     recent_8h = candles_1h[-8:]
     total_v8 = sum(c[5] for c in recent_8h)
     green_v8 = sum(c[5] for c in recent_8h if c[4] >= c[1])
     green_vol_share_pct = (green_v8 / total_v8 * 100.0) if total_v8 > 0 else 50.0
 
-    # Rata-rata wick atas 4 jam terakhir (Overhead Supply / Whale jual di setiap pantulan)
     last_4h = candles_1h[-4:]
+    total_v4 = sum(c[5] for c in last_4h)
+    green_v4 = sum(c[5] for c in last_4h if c[4] >= c[1])
+    green_vol_4h_pct = (green_v4 / total_v4 * 100.0) if total_v4 > 0 else 50.0
+
+    # Rata-rata wick atas 4 jam terakhir (Overhead Supply / Whale jual di setiap pantulan)
     avg_upper_wick_pct = (sum(_upper_wick_ratio(c) for c in last_4h) / len(last_4h)) * 100.0
 
     # Ekspansi volume keluar dari base kering (1h terbaru atau proyeksi 5m x 12 vs median base 1h)
@@ -734,6 +756,36 @@ def _evaluate_daily_consolidation_ohlcv(
         and volume_wake_ok
     )
 
+    # ---- v5.6 JALUR 2 (VETERAN SWING): PULLBACK RECLAIM DALAM TREN NAIK 12 JAM ----
+    # Menangkap gelombang kedua koin veteran (seperti JOB di $2.63M usai pullback -15% dari $2.86M):
+    # Meski rentang 24h melebar >58% akibat gelombang pertama, kotak 12h terakhir rapi (<=45%),
+    # candle 1h saat ini hijau reclaim kuat (>= +2.0%), Higher-Low utuh, dan volume hijau 4h dominan (>= 55%).
+    recent_12h = base[-12:] if len(base) >= 12 else base
+    r12_high = max(c[2] for c in recent_12h)
+    r12_low = min(c[3] for c in recent_12h)
+    r12_range_pct = ((r12_high - r12_low) / r12_low * 100.0) if r12_low > 0 else 999.0
+    r12_pos_pct = ((current_close - r12_low) / max(r12_high - r12_low, 1e-12)) * 100.0
+    r12_med_vol = median([c[5] for c in recent_12h]) if recent_12h else med_base_vol
+    r12_vol_exp = (active_vol / r12_med_vol) if r12_med_vol > 0 else vol_expansion_ratio
+    veteran_vol_exp = max(vol_expansion_ratio, r12_vol_exp)
+
+    veteran_swing_pullback_reclaim = (
+        anti_top.is_veteran_swing
+        and (not is_bearish_distribution)
+        and higher_low_intact
+        and (6.0 <= r12_range_pct <= 45.0)
+        and ((4.0 <= dd_from_24h_peak_pct <= 24.0) or (55.0 <= r12_pos_pct <= 115.0))
+        and latest_1h_body_pct >= 2.0
+        and avg_upper_wick_pct < 36.0
+        and green_vol_share_pct >= 48.0
+        and green_vol_4h_pct >= 55.0
+        and veteran_vol_exp >= 1.15
+        and anti_top.buy_ratio_6h_pct >= 50.0
+        and anti_top.buy_ratio_1h_pct >= 53.0
+    )
+
+    trigger_passed = bullish_breakout_ready or veteran_swing_pullback_reclaim
+
     # Jika tidak bearish, tetapi belum memenuhi syarat breakout (masih di tengah box atau volume belum bangun)
     if is_bearish_distribution:
         breakout_sev = "VETO"
@@ -743,6 +795,12 @@ def _evaluate_daily_consolidation_ohlcv(
         breakout_detail = (
             f"BREAKOUT AKUMULASI HARIAN: Box ketat {base_range_pct:.0f}%, Higher-Low utuh, "
             f"harga di posisi {range_position_pct:.0f}% box, volume ekspansi {vol_expansion_ratio:.2f}x."
+        )
+    elif veteran_swing_pullback_reclaim:
+        breakout_sev = "PASS"
+        breakout_detail = (
+            f"VETERAN SWING PULLBACK RECLAIM: Kotak 12h rapi {r12_range_pct:.0f}% (DD -{dd_from_24h_peak_pct:.1f}% dari puncak), "
+            f"candle 1h reclaim {latest_1h_body_pct:+.1f}%, GreenVol4h {green_vol_4h_pct:.0f}%, vol {veteran_vol_exp:.2f}x."
         )
     elif range_position_pct > 125.0:
         breakout_sev = "WAIT_DIP"
@@ -761,11 +819,19 @@ def _evaluate_daily_consolidation_ohlcv(
         GateCheck(
             id="daily_breakout_trigger",
             layer="STRUCTURE",
-            label="Trigger Breakout Konsolidasi Harian (1h OHLCV)",
-            passed=bullish_breakout_ready,
+            label=(
+                "Trigger Veteran Swing Breakout / Pullback Reclaim (1h OHLCV)"
+                if anti_top.is_veteran_swing
+                else "Trigger Breakout Konsolidasi Harian (1h OHLCV)"
+            ),
+            passed=trigger_passed,
             severity=breakout_sev,
-            actual=f"Box {base_range_pct:.0f}% · Pos {range_position_pct:.0f}% · Vol {vol_expansion_ratio:.2f}x",
-            threshold="Box 6–58%, Pos 62–125%, HL=Ya, GreenVol>=52%, Vol>=1.45x",
+            actual=f"Box24h {base_range_pct:.0f}% · Box12h {r12_range_pct:.0f}% · Pos {range_position_pct:.0f}% · Vol {veteran_vol_exp:.2f}x",
+            threshold=(
+                "Box24h 6–58% Breakout ATAU Veteran 12h Pullback Reclaim (1h>=+2%, GreenVol4h>=55%, Vol>=1.15x)"
+                if anti_top.is_veteran_swing
+                else "Box 6–58%, Pos 62–125%, HL=Ya, GreenVol>=52%, Vol>=1.45x"
+            ),
             detail=breakout_detail,
         )
     )
@@ -779,23 +845,30 @@ def _evaluate_daily_consolidation_ohlcv(
             f"Akumulasi Harian Breakout · Box {base_range_pct:.0f}% · Pos {range_position_pct:.0f}% · "
             f"GreenVol {green_vol_share_pct:.0f}% · Vol {vol_expansion_ratio:.1f}x"
         )
+    elif veteran_swing_pullback_reclaim:
+        regime = "PULLBACK_RECLAIM"
+        summary = (
+            f"Veteran Swing Pullback Reclaim · Box12h {r12_range_pct:.0f}% · DD -{dd_from_24h_peak_pct:.1f}% · "
+            f"GreenVol4h {green_vol_4h_pct:.0f}% · Vol {veteran_vol_exp:.1f}x"
+        )
     else:
         regime = "BULLISH_CONSOLIDATION_WAITING"
         summary = f"Konsolidasi Harian Menunggu Breakout (Pos {range_position_pct:.0f}%, Vol {vol_expansion_ratio:.1f}x)."
 
     return StructureResult(
-        passed=bullish_breakout_ready,
-        wait_dip_only=(not bullish_breakout_ready) and (not is_bearish_distribution),
+        passed=trigger_passed,
+        wait_dip_only=(not trigger_passed) and (not is_bearish_distribution),
         regime=regime,
         ohlcv_verified=True,
         checks=tuple(checks),
         upper_wick_pct=round(avg_upper_wick_pct, 1),
-        drawdown_from_peak_pct=round(max(0.0, (base_high - current_close) / base_high * 100.0) if base_high > 0 else 0.0, 1),
-        vol_expansion_ratio=round(vol_expansion_ratio, 2),
-        base_range_pct=round(base_range_pct, 1),
-        range_position_pct=round(range_position_pct, 1),
+        drawdown_from_peak_pct=round(dd_from_24h_peak_pct, 1),
+        vol_expansion_ratio=round(veteran_vol_exp if veteran_swing_pullback_reclaim else vol_expansion_ratio, 2),
+        base_range_pct=round(r12_range_pct if veteran_swing_pullback_reclaim else base_range_pct, 1),
+        range_position_pct=round(r12_pos_pct if veteran_swing_pullback_reclaim else range_position_pct, 1),
         green_vol_share_pct=round(green_vol_share_pct, 1),
         higher_low_intact=higher_low_intact,
+        green_vol_last4_pct=round(green_vol_4h_pct, 1),
         summary=summary,
     )
 
