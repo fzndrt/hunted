@@ -1828,6 +1828,203 @@ def test_v54_fullball_and_zhaki_caught_early_before_peak() -> None:
     assert audit_z.total_score >= 82
 
 
+def test_v55_blocks_late_ath_and_20m_death_pvp_while_preserving_early_and_wlfi_reclaim() -> None:
+    """v5.5: Blokir jebakan ATH +1000% dari lahir & PvP mati 20 menit, tetap tangkap WLFI #09 & Early Corridor A (7m $58K)!"""
+    from bot.scoring import score_and_finalize
+    from bot.structure import aggregate_1m_to_3m_candles, evaluate_candle_structure
+
+    now_ms = 1_750_000_000_000
+    cfg = BotConfig()
+    exec_ok = evaluate_execution_quotes(
+        {"outAmount": "1000000", "priceImpactPct": "0.004"},
+        {"outAmount": "98600000", "priceImpactPct": "0.005"},
+        {"outAmount": "10000000", "priceImpactPct": "0.015"},
+        {"outAmount": "955000000", "priceImpactPct": "0.018"},
+        cfg,
+    )
+
+    # --- TRAP 1: PvP ATH +1000% dari lahir (usia 35m, MC $185K, 1h/24h +520% dari migrasi = 37x dari Pump.fun $5K!) ---
+    # Dulu lolos v5.4 karena age < 60m & is_viral_velocity ($22K/5m, $180K/1h) membypass h1_too_hot -> lalu mati 20m kemudian!
+    pvp_late_ath = _make_pair(
+        symbol="PVPTOP",
+        market_cap=185_000.0,
+        liquidity_usd=28_000.0,
+        vol_m5=22_000.0,
+        vol_h1=180_000.0,
+        vol_h24=180_000.0,
+        buys_m5=360,
+        sells_m5=285,  # $34/tx
+        buys_h1=2_900,
+        sells_h1=2_300,
+        buys_h24=2_900,
+        sells_h24=2_300,
+        price_change_m5=7.5,
+        price_change_h1=520.0,
+        price_change_h24=520.0,
+        pool_count=1,
+        pair_created_at_ms=now_ms - 35 * 60_000,
+    )
+    at_pvp = evaluate_anti_top(pvp_late_ath, cfg, now_ms=now_ms)
+    assert not at_pvp.passed and not at_pvp.wait_dip_only
+    assert any(c.id == "pre_ath_extension" and not c.passed for c in at_pvp.checks)
+    assert any(c.id == "orderflow_quality" and not c.passed for c in at_pvp.checks)
+
+    # --- TRAP 2: Micro-Bundler PvP Churn ($25/tx di 5m, MC $85K) -> wajib VETO wash_bot_5m & tanpa viral bypass! ---
+    bundler_churn = _make_pair(
+        symbol="BUNDLER",
+        market_cap=85_000.0,
+        liquidity_usd=19_000.0,
+        vol_m5=22_500.0,
+        vol_h1=175_000.0,
+        vol_h24=175_000.0,
+        buys_m5=520,
+        sells_m5=380,  # 900 tx = $25.0/tx < $28/tx!
+        buys_h1=4_100,
+        sells_h1=3_200,
+        buys_h24=4_100,
+        sells_h24=3_200,
+        price_change_m5=6.0,
+        price_change_h1=160.0,
+        price_change_h24=160.0,
+        pair_created_at_ms=now_ms - 28 * 60_000,
+    )
+    at_bund = evaluate_anti_top(bundler_churn, cfg, now_ms=now_ms)
+    assert not at_bund.passed and not at_bund.is_viral_velocity
+    assert any(c.id == "orderflow_quality" and not c.passed and "wash-bot" in c.detail for c in at_bund.checks)
+
+    # --- TRAP 3: Vertical ATH Chasing di MC $175K (naik lurus +450% tanpa base pullback, menempel puncak DD 2%) ---
+    vertical_ath_pair = _make_pair(
+        symbol="VERTATH",
+        market_cap=175_000.0,
+        liquidity_usd=31_000.0,
+        vol_m5=28_000.0,
+        vol_h1=195_000.0,
+        vol_h24=195_000.0,
+        buys_m5=290,
+        sells_m5=210,  # $56/tx
+        buys_h1=2_100,
+        sells_h1=1_600,
+        buys_h24=2_100,
+        sells_h24=1_600,
+        price_change_m5=9.0,
+        price_change_h1=390.0,
+        price_change_h24=390.0,
+        pool_count=2,
+        pair_created_at_ms=now_ms - 30 * 60_000,
+    )
+    vertical_candles = [
+        [1, 31.0e-6, 48.0e-6, 30.0e-6, 46.0e-6, 18_000],
+        [2, 46.0e-6, 76.0e-6, 45.0e-6, 74.0e-6, 26_000],
+        [3, 74.0e-6, 112.0e-6, 72.0e-6, 110.0e-6, 34_000],
+        [4, 110.0e-6, 148.0e-6, 108.0e-6, 145.0e-6, 32_000],
+        [5, 145.0e-6, 178.0e-6, 143.0e-6, 175.0e-6, 28_000],  # Run +464%, DD 1.7%, 0 pullback!
+    ]
+    at_vert = evaluate_anti_top(vertical_ath_pair, cfg, now_ms=now_ms)
+    st_vert = evaluate_candle_structure(vertical_ath_pair, at_vert, vertical_candles, [], cfg)
+    assert not st_vert.passed and st_vert.regime == "EXHAUSTION_TOP"
+    assert any(c.id == "volume_exhaustion_guard" and not c.passed and "Anti-ATH Chasing" in c.detail for c in st_vert.checks)
+
+    # --- TRAP 4: Thin-Holder Intraday PvP Shell ($160K MC dengan hanya 560H = $285.7/H > $240/H) -> VETO di L1! ---
+    thin_shell_rc = _clean_rugcheck()
+    thin_shell_rc["totalHolders"] = 560
+    sec_thin = evaluate_security(_make_pair(market_cap=160_000.0, pair_created_at_ms=now_ms - 40 * 60_000), thin_shell_rc, now_ms=now_ms)
+    assert not sec_thin.passed
+    assert any(c.id == "organic_holders" and not c.passed for c in sec_thin.checks)
+
+    # --- WINNER A: WLFI #09 Pullback Reclaim ($135.5K, 4 candle HIJAU beruntun GreenVol4=100% pasca #04/#05 merah) ---
+    wlfi_09 = _make_pair(
+        mint="HmGQsYJyeiWrV6jABUY2Cb3bEmVxwk6LzVxCchsCpump",
+        symbol="WLFI",
+        name="World Liberty",
+        market_cap=135_500.0,
+        liquidity_usd=27_500.0,
+        vol_m5=31_000.0,
+        vol_h1=310_000.0,
+        vol_h24=310_000.0,
+        buys_m5=270,
+        sells_m5=205,  # 56.8% buy, $65.3/tx
+        buys_h1=2_600,
+        sells_h1=2_050,
+        buys_h24=2_600,
+        sells_h24=2_050,
+        price_change_m5=8.2,
+        price_change_h1=368.0,
+        price_change_h24=368.0,
+        pool_count=3,
+        is_boosted=False,
+        has_socials=True,
+        social_count=2,
+        has_website=True,
+        has_image=True,
+        pair_created_at_ms=now_ms - 45 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    wlfi_rc = _clean_rugcheck()
+    wlfi_rc["score_normalised"] = 1
+    wlfi_rc["totalHolders"] = 1_650  # $82/H!
+    wlfi_candles = [
+        [1, 28.9e-6, 112.0e-6, 28.5e-6, 107.3e-6, 95_000],
+        [2, 107.3e-6, 158.0e-6, 104.0e-6, 148.0e-6, 62_000],
+        [3, 148.0e-6, 155.0e-6, 118.0e-6, 122.0e-6, 58_000],  # Merah pullback #04 (volume besar!)
+        [4, 122.0e-6, 126.0e-6, 98.0e-6, 102.0e-6, 52_000],   # Merah pullback #05 (GreenVol6 turun ke 55%!)
+        [5, 102.0e-6, 114.0e-6, 100.0e-6, 111.0e-6, 26_000],  # Hijau reclaim #06
+        [6, 111.0e-6, 124.0e-6, 109.0e-6, 119.0e-6, 28_000],  # Hijau reclaim #07
+        [7, 119.0e-6, 136.0e-6, 117.0e-6, 125.2e-6, 30_000],  # Hijau reclaim #08 (wick 57%)
+        [8, 125.2e-6, 149.0e-6, 124.0e-6, 135.5e-6, 31_000],  # Hijau reclaim #09 (4 hijau beruntun, DD -14.2%, wick 54%!)
+    ]
+    sec_w = evaluate_security(wlfi_09, wlfi_rc, now_ms=now_ms)
+    at_w = evaluate_anti_top(wlfi_09, cfg, now_ms=now_ms)
+    st_w = evaluate_candle_structure(wlfi_09, at_w, wlfi_candles, [], cfg)
+    audit_w = score_and_finalize(wlfi_09, sec_w, at_w, exec_ok, cfg, structure=st_w)
+    assert sec_w.passed, f"WLFI #09 L1 failed: {[c.detail for c in sec_w.checks if not c.passed]}"
+    assert at_w.passed, f"WLFI #09 L2A failed: {[c.detail for c in at_w.checks if not c.passed]}"
+    assert st_w.passed, f"WLFI #09 L2B failed: {[c.detail for c in st_w.checks if not c.passed]}"
+    assert audit_w.verdict == "ENTRY_READY"
+
+    # --- WINNER B: Early Corridor A Fast-Track (usia 7m, MC $58K, 480H, RC=1, 0 risks) sebelum meledak ke $200K! ---
+    early_a_7m = _make_pair(
+        symbol="EARLY58K",
+        market_cap=58_000.0,
+        liquidity_usd=16_500.0,
+        vol_m5=21_000.0,
+        vol_h1=52_000.0,
+        vol_h24=52_000.0,
+        buys_m5=290,
+        sells_m5=210,  # 58% buy, $42/tx
+        buys_h1=720,
+        sells_h1=520,  # 58.1% buy
+        buys_h24=720,
+        sells_h24=520,
+        price_change_m5=11.0,
+        price_change_h1=95.0,
+        price_change_h24=95.0,
+        pool_count=2,
+        is_boosted=False,
+        has_socials=True,
+        social_count=1,
+        has_website=True,
+        pair_created_at_ms=now_ms - 7 * 60_000,
+        feed_sources=("gecko_trending_5m", "dex_pumpswap"),
+    )
+    early_a_rc = _clean_rugcheck()
+    early_a_rc["score_normalised"] = 1
+    early_a_rc["totalHolders"] = 480  # $121/H, >= 400H Koridor A Fast-Track!
+    early_1m = [
+        [i, 30e-6 + i * 3.8e-6, 32e-6 + i * 4.0e-6, 29e-6 + i * 3.6e-6, 31.5e-6 + i * 3.8e-6, 7_000]
+        for i in range(8)
+    ]
+    synth_2m = aggregate_1m_to_3m_candles(early_1m)
+    at_7m = evaluate_anti_top(early_a_7m, cfg, now_ms=now_ms)
+    sec_7m = evaluate_security(early_a_7m, early_a_rc, now_ms=now_ms, require_hyper_viral_holders=at_7m.is_hyper_viral_fasttrack)
+    st_7m = evaluate_candle_structure(early_a_7m, at_7m, synth_2m, [], cfg)
+    audit_7m = score_and_finalize(early_a_7m, sec_7m, at_7m, exec_ok, cfg, structure=st_7m)
+    assert at_7m.passed and at_7m.is_hyper_viral_fasttrack, f"Early 7m L2A failed: {[c.detail for c in at_7m.checks if not c.passed]}"
+    assert sec_7m.passed, f"Early 7m L1 failed: {[c.detail for c in sec_7m.checks if not c.passed]}"
+    assert st_7m.passed, f"Early 7m L2B failed: {[c.detail for c in st_7m.checks if not c.passed]}"
+    assert audit_7m.verdict == "ENTRY_READY"
+
+
+
 
 
 

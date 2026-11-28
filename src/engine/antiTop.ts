@@ -87,22 +87,42 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     createdAtMs > 0 ? Math.max(1, (Date.now() - createdAtMs) / 60_000) : 60;
   const isDailyCoin = ageMinutes >= 20 * 60;
 
+  const isBoosted = asNum(pair.boosts?.active) > 0;
   const isViralVelocity =
-    (volM5 >= 15_000 && volH1 >= 120_000 && turnoverH1Ratio >= 0.7) ||
-    (volM5 >= 25_000 && volH1 >= 180_000 && turnoverH1Ratio >= 0.5);
-  const isHyperViralFastTrack =
+    !isBoosted &&
+    avgTicketM5Usd >= 30.0 &&
+    ((volM5 >= 20_000 && volH1 >= 165_000 && turnoverH1Ratio >= 0.85) ||
+      (volM5 >= 32_000 && volH1 >= 220_000 && turnoverH1Ratio >= 0.55));
+  const isMegaViralFlow =
+    isViralVelocity && volM5 >= 45_000 && volH1 >= 350_000 && avgTicketM5Usd >= 65.0;
+  const isEarlyCorridorAFastTrack =
     ageMinutes >= 6 &&
     ageMinutes < 10 &&
-    volM5 >= 25_000 &&
-    volH1 >= 90_000 &&
-    turnoverH1Ratio >= 1.0 &&
-    liqUsd >= 16_000 &&
-    buyRatio1hPctEarly >= 54.0 &&
-    buyRatio5mPctEarly >= 52.0 &&
-    totalTxH1 >= 350;
+    spotMc <= 88_000 &&
+    volM5 >= 18_000 &&
+    volH1 >= 45_000 &&
+    turnoverH1Ratio >= 0.8 &&
+    liqUsd >= 14_000 &&
+    buyRatio5mPctEarly >= 55.0 &&
+    buyRatio1hPctEarly >= 55.0 &&
+    avgTicketM5Usd >= 32.0 &&
+    totalTxH1 >= 220 &&
+    !isBoosted;
+  const isHyperViralFastTrack =
+    isEarlyCorridorAFastTrack ||
+    (ageMinutes >= 6 &&
+      ageMinutes < 10 &&
+      volM5 >= 25_000 &&
+      volH1 >= 90_000 &&
+      turnoverH1Ratio >= 1.0 &&
+      liqUsd >= 16_000 &&
+      buyRatio1hPctEarly >= 54.0 &&
+      buyRatio5mPctEarly >= 52.0 &&
+      avgTicketM5Usd >= 32.0 &&
+      totalTxH1 >= 350 &&
+      !isBoosted);
   const isPullbackContractionOk = volM5 >= 12_000;
 
-  const isBoosted = asNum(pair.boosts?.active) > 0;
   const hasCommunityPresence =
     (Array.isArray(pair.info?.socials) && pair.info.socials.length > 0) ||
     (Array.isArray(pair.info?.websites) && pair.info.websites.length > 0);
@@ -232,7 +252,8 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     !isBoosted;
   const m5TooHot = pM5 > effectiveMaxM5;
   const m5FallingKnife = pM5 < m5Floor || pH1 < h1Floor;
-  const h1TooExtended = pH1 > effectiveMaxH1 && !isViralVelocity && !isCorridorARevival;
+  const viralH1CapOk = isMegaViralFlow || (isViralVelocity && pH1 <= 420.0);
+  const h1TooExtended = pH1 > effectiveMaxH1 && !viralH1CapOk && !isCorridorARevival;
   const momentumClean = !m5TooHot && !m5FallingKnife && !h1TooExtended;
 
   checks.push({
@@ -278,9 +299,10 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
     vetoReasons.push(`Likuiditas tipis ($${Math.round(liqUsd).toLocaleString()}, ${liqMcRatioPct.toFixed(1)}% MC)`);
   }
 
-  // 5. v5 Viral Demand Velocity, Net Buyer Dominance (>=52%), Paid-Boost Guard & Extreme Wash-Churn Guard
-  const minTicketM5 = corridor?.minAvgTicketM5Usd ?? 22.0;
-  const isMicroBotnetH1 = totalTxH1 >= 250 && avgTicketH1Usd < 20.0;
+  // 5. v5.5 Viral Demand Velocity, Net Buyer Dominance (>=52%), Paid-Boost Guard & Anti-PvP-Bundler Ticket Floor ($28/$24)
+  const minTicketM5 = isDailyCoin ? 22.0 : Math.max(28.0, corridor?.minAvgTicketM5Usd ?? 28.0);
+  const minTicketH1 = isDailyCoin ? 20.0 : 24.0;
+  const isMicroBotnetH1 = totalTxH1 >= 250 && avgTicketH1Usd < minTicketH1;
   const isMicroTicketM5 = totalTxM5 >= 12 && avgTicketM5Usd < minTicketM5;
   const isWhaleSiphonM5 = buysM5 >= 12 && buyRatio5mPctEarly >= 62 && pM5 < -0.5;
   const isH6SellBleed = ageMinutes >= 360 && totalTxH6 >= 20 && buyRatio6hPctEarly < 49.0;
@@ -392,31 +414,38 @@ export function evaluateAntiTopLayer(pair: DexPairLike, cfg: ScanConfig): AntiTo
   if (!buyerPressureOk) vetoReasons.push(`Buyer belum dominan (5m ${buyRatio5mPctEarly.toFixed(0)}%, 1h ${buyRatio1hPctEarly.toFixed(0)}% < 52%)`);
   if (!tx24hOk) vetoReasons.push(`Transaksi pair kurang (${totalTx24h} < ${effectiveMinTx24h})`);
 
-  // 6. Anti-Late-ATH & Pre-ATH Extension Guard (v5.4: Blokir entry telat +1000%-5000%, kecualikan Revival Koridor A <= $92K!)
+  // 6. Anti-Late-ATH & Pre-ATH Extension Guard (v5.5: Tutup celah +1000% dari lahir Pump.fun pada usia 20–59m & >=60m!)
   const isExtremeParabolicLate =
     !isDailyCoin && (pH24 >= 2_000 || pH6 >= 1_200 || (pH1 >= 900 && !isCorridorARevival));
   const isIntradayLateNonBase =
-    !isDailyCoin && ageMinutes >= 60 && !isCorridorDViralBase && (pH24 >= 850 || pH6 >= 600);
+    !isDailyCoin &&
+    !isCorridorDViralBase &&
+    !isMegaViralFlow &&
+    !isCorridorARevival &&
+    ((spotMc >= 135_000 && (pH1 >= 420 || pH6 >= 420 || pH24 >= 420)) ||
+      (ageMinutes >= 45 && (pH24 >= 550 || pH6 >= 480)) ||
+      pH24 >= 850 ||
+      pH6 >= 600);
   const isNearLocalAth = ageMinutes >= 360 && (pH6 > 160 || pH24 > 260);
   const lateAthHardVeto = isExtremeParabolicLate || isIntradayLateNonBase;
   const preAthOk = !isNearLocalAth && !lateAthHardVeto;
   checks.push({
     id: 'pre_ath_extension',
     layer: 'ANTI_TOP',
-    label: 'Anti-Late-ATH & Pre-ATH Extension Guard (Bukan Setelah +1000%–5000%)',
+    label: 'Anti-Late-ATH & Pre-ATH Extension Guard (Anti +1000% dari Lahir)',
     passed: preAthOk,
     severity: lateAthHardVeto ? 'HARD_VETO' : 'WAIT_DIP',
     actual: `1h ${pH1 >= 0 ? '+' : ''}${pH1.toFixed(0)}% · 6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}% · 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%`,
-    threshold: 'Intraday < +850% 24h (ekstrem < +2000%) · Usia >=6j: 6h <= +160% & 24h <= +260%',
+    threshold: 'MC>=$135K: < +420% pasca-migrasi (kecuali Mega-Viral) · Usia >=6j: 6h<=+160% & 24h<=+260%',
     detail: lateAthHardVeto
-      ? `Terlalu telat / Post-Parabolic ATH (24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%, 6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}%) — bukan lagi entry awal!`
+      ? `Terlalu telat / ATH Pasca-Lahir (MC $${Math.round(spotMc).toLocaleString()}, 1h ${pH1 >= 0 ? '+' : ''}${pH1.toFixed(0)}%, 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%) — rawan langsung dump!`
       : preAthOk
       ? 'Masih di fase awal sebelum zona puncak ekstrem — ruang kenaikan masih lebar.'
       : 'Koin berusia >= 6 jam sudah naik terlalu tinggi (mendekati ATH lokal) — tunggu pullback/base baru.',
   });
   if (lateAthHardVeto) {
     vetoReasons.push(
-      `Terlalu telat di ATH pasca-parabolik (24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%, 6h ${pH6 >= 0 ? '+' : ''}${pH6.toFixed(0)}%)`
+      `Terlalu telat di ATH pasca-lahir (MC $${Math.round(spotMc).toLocaleString()}, 1h ${pH1 >= 0 ? '+' : ''}${pH1.toFixed(0)}%, 24h ${pH24 >= 0 ? '+' : ''}${pH24.toFixed(0)}%)`
     );
   } else if (!preAthOk) {
     waitReasons.push(

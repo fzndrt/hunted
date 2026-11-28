@@ -71,14 +71,41 @@ def evaluate_anti_top(
     vol_m5_accel_ratio = (pair.vol_m5 / avg_5m_from_1h) if avg_5m_from_1h > 0 else 1.0
     is_daily_coin = age_minutes >= 20.0 * 60.0
 
-    # Deteksi Viral Velocity (v4): arus modal deras seperti $Zero / PERRO / 4CHAN / PAIR
+    # Deteksi Viral Velocity (v5.5): WAJIB non-boosted & avg ticket >= $30/tx agar churn bundler mikro ($22-$29/tx)
+    # tidak bisa mem-bypass batas parabolik & mengejar ATH lalu mati 20 menit kemudian!
     is_viral_velocity = (
-        (pair.vol_m5 >= 15_000.0 and pair.vol_h1 >= 120_000.0 and turnover_h1_ratio >= 0.70)
-        or (pair.vol_m5 >= 25_000.0 and pair.vol_h1 >= 180_000.0 and turnover_h1_ratio >= 0.50)
+        (not pair.is_boosted)
+        and avg_ticket_5m >= 30.0
+        and (
+            (pair.vol_m5 >= 20_000.0 and pair.vol_h1 >= 165_000.0 and turnover_h1_ratio >= 0.85)
+            or (pair.vol_m5 >= 32_000.0 and pair.vol_h1 >= 220_000.0 and turnover_h1_ratio >= 0.55)
+        )
     )
-    # Ultra-Early Organic Fast-Track (v5.1): koin 6–9m dgn arus modal kuat langsung ditangkap di gelombang awal
-    # tetap diverifikasi ketat di Layer 1 (>=500 holders, 0 risks, 0% dev) & Layer 2B (OHLCV 1m->2m/3m).
-    is_hyper_viral_fasttrack = (
+    # Mega-Viral Institutional Tier (v5.5 — khusus raksasa nyata seperti $Zero / 4CHAN):
+    # Hanya arus modal besar nyata ($45K+/5m, $350K+/1h, >= $65/tx, multi-pool >=3) yang diizinkan menembus batas > +420% 1h/24h!
+    is_mega_viral_flow = (
+        is_viral_velocity
+        and pair.vol_m5 >= 45_000.0
+        and pair.vol_h1 >= 350_000.0
+        and avg_ticket_5m >= 65.0
+        and pair.pool_count >= 3
+    )
+    # Ultra-Early Organic Fast-Track (v5.5): tangkap Koridor A ($25K–$88K) sejak menit 6–9 sebelum meledak ke $150K–$300K!
+    # Tetap diverifikasi ketat di Layer 1 (>=400H Koridor A / >=500H Koridor B+, 0 risks, 0% dev, RC <= 5) & Layer 2B OHLCV 1m->2m.
+    is_early_corridor_a_fasttrack = (
+        6.0 <= age_minutes < cfg.min_pair_age_minutes
+        and spot_mc <= 88_000.0
+        and pair.vol_m5 >= 18_000.0
+        and pair.vol_h1 >= 45_000.0
+        and turnover_h1_ratio >= 0.80
+        and liq_usd >= 14_000.0
+        and buy_ratio_5m >= 55.0
+        and buy_ratio_1h >= 55.0
+        and avg_ticket_5m >= 32.0
+        and tx_1h >= 220
+        and (not pair.is_boosted)
+    )
+    is_hyper_viral_fasttrack = is_early_corridor_a_fasttrack or (
         6.0 <= age_minutes < cfg.min_pair_age_minutes
         and pair.vol_m5 >= 25_000.0
         and pair.vol_h1 >= 90_000.0
@@ -86,7 +113,9 @@ def evaluate_anti_top(
         and liq_usd >= 16_000.0
         and buy_ratio_1h >= 54.0
         and buy_ratio_5m >= 52.0
+        and avg_ticket_5m >= 32.0
         and tx_1h >= 350
+        and (not pair.is_boosted)
     )
     # Kontraksi volume sehat saat pullback: Vol5m >= $12K tidak boleh dianggap sekarat (seperti $Zero $50K/5m di 0.43x accel!)
     is_pullback_contraction_ok = pair.vol_m5 >= 12_000.0
@@ -255,9 +284,10 @@ def evaluate_anti_top(
     m5_falling = p_m5 < m5_floor
     h1_falling = p_h1 < h1_floor
     m5_too_hot = p_m5 > effective_max_m5
-    # Kunci v4/v5.4: koin viral ($Zero) & Revival Koridor A ($5K->$61K seperti Zhaki) TIDAK dibunuh oleh efek pembagi 1h;
-    # melainkan divalidasi ketat lewat batas 5m (<= +22%) dan struktur candle OHLCV 5m & VWAP!
-    h1_too_hot = (p_h1 > effective_max_h1) and (not is_viral_velocity) and (not is_corridor_a_revival)
+    # Kunci v5.5: koin viral biasa HANYA boleh melampaui batas fresh hingga +420% 1h (mencegah kejar ATH +500%–+850%
+    # yang sebenarnya sudah +2000% dari lahir Pump.fun!). Di atas +420% 1h HANYA diizinkan untuk Mega-Viral ($Zero) atau Revival Koridor A (Zhaki).
+    viral_h1_cap_ok = is_mega_viral_flow or (is_viral_velocity and p_h1 <= 420.0)
+    h1_too_hot = (p_h1 > effective_max_h1) and (not viral_h1_cap_ok) and (not is_corridor_a_revival)
     parabolic_ok = (not m5_falling) and (not h1_falling) and (not m5_too_hot) and (not h1_too_hot)
 
     if parabolic_ok and is_viral_velocity and p_h1 > effective_max_h1:
@@ -366,7 +396,11 @@ def evaluate_anti_top(
         and (vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio)
         and (not is_pullback_contraction_ok)
     )
-    wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < 22.0
+    # v5.5 Anti-PvP-Bundler Ticket Floor ($28/tx 5m & $24/tx 1h untuk intraday): semua winner asli >= $30.3/tx,
+    # sedangkan koin PvP churn yang mati 20 menit kemudian umumnya bermain di $18–$27/tx.
+    min_ticket_5m_req = 22.0 if is_daily_coin else 28.0
+    min_ticket_1h_req = 20.0 if is_daily_coin else 24.0
+    wash_bot_5m = tx_5m >= 12 and avg_ticket_5m < min_ticket_5m_req
     sideways_churn = (not is_daily_coin) and turnover_h1_ratio >= 1.8 and p_h1 < 8.0
     # v5 Extreme Wash-Churn (kasus SuperFIONA: Turn1h 38.8x tapi harga flat +23% / 5m -0.05%)
     extreme_wash_churn = (
@@ -374,10 +408,18 @@ def evaluate_anti_top(
         and turnover_h1_ratio >= 8.0
         and (p_h1 < 60.0 or p_m5 < 1.0)
     )
+    # v5.5 High-MC Single-Pool Fragility Guard: koin intraday >= $165K yang masih 1 pool tunggal tanpa arus whale besar
+    # ($35K+/5m & >=$60/tx) sangat rentan dump -80% dalam 20 menit setelah sniper awal keluar.
+    single_pool_high_mc_fragile = (
+        (not is_daily_coin)
+        and spot_mc >= 165_000.0
+        and pair.pool_count <= 1
+        and not (pair.vol_m5 >= 35_000.0 and avg_ticket_5m >= 60.0)
+    )
 
     effective_min_tx = compute_effective_min_tx_24h(age_minutes)
     tx_count_ok = tx_24h >= effective_min_tx
-    ticket_1h_ok = (tx_1h == 0) or (avg_ticket_1h >= 20.0)
+    ticket_1h_ok = (tx_1h == 0) or (avg_ticket_1h >= min_ticket_1h_req)
 
     flow_ok = (
         vol_m5_ok
@@ -386,16 +428,21 @@ def evaluate_anti_top(
         and (not wash_bot_5m)
         and (not sideways_churn)
         and (not extreme_wash_churn)
+        and (not single_pool_high_mc_fragile)
         and tx_count_ok
         and ticket_1h_ok
     )
     if wash_bot_5m:
         flow_detail = (
-            f"DITOLAK: Terdeteksi wash-bot/micro-bot 5m ({tx_5m} tx hanya ${pair.vol_m5:,.0f} = ${avg_ticket_5m:.1f}/tx)."
+            f"DITOLAK: Terdeteksi wash-bot/micro-bundler 5m ({tx_5m} tx hanya ${pair.vol_m5:,.0f} = ${avg_ticket_5m:.1f}/tx < ${min_ticket_5m_req:.0f}/tx)."
         )
     elif extreme_wash_churn:
         flow_detail = (
             f"DITOLAK: Extreme Wash-Bot Churn (turnover 1h {turnover_h1_ratio:.1f}x MC tetapi harga tidak naik proporsional: 1h {p_h1:+.1f}%, 5m {p_m5:+.1f}%)."
+        )
+    elif single_pool_high_mc_fragile:
+        flow_detail = (
+            f"DITOLAK (Single-Pool High-MC PvP): MC ${spot_mc:,.0f} >= $165K hanya bertumpu pada 1 pool tanpa arus whale besar (Vol5m ${pair.vol_m5:,.0f}, ${avg_ticket_5m:.0f}/tx) — rawan mati dalam 20 menit."
         )
     elif vol_dying:
         flow_detail = (
@@ -415,7 +462,7 @@ def evaluate_anti_top(
         )
     elif not tx_count_ok or not ticket_1h_ok:
         flow_detail = (
-            f"DITOLAK: Aktivitas organik kurang ({tx_24h} tx, avg 1h ${avg_ticket_1h:.0f}/tx)."
+            f"DITOLAK: Aktivitas organik kurang ({tx_24h} tx, avg 1h ${avg_ticket_1h:.0f}/tx < ${min_ticket_1h_req:.0f}/tx)."
         )
     elif is_pullback_contraction_ok and vol_m5_accel_ratio < cfg.min_vol_m5_accel_ratio:
         flow_detail = (
@@ -434,7 +481,7 @@ def evaluate_anti_top(
             passed=flow_ok,
             severity="PASS" if flow_ok else "VETO",
             actual=f"5m ${pair.vol_m5:,.0f} ({vol_m5_accel_ratio:.2f}x · ${avg_ticket_5m:.0f}/tx) · 1h ${pair.vol_h1:,.0f} ({turnover_h1_ratio:.2f}x)",
-            threshold=f"5m>=${req_vol_m5:,.0f}, 1h>=${req_vol_h1:,.0f}, Turn>={req_turnover_h1:.2f}x, >=$22/tx",
+            threshold=f"5m>=${req_vol_m5:,.0f}, 1h>=${req_vol_h1:,.0f}, Turn>={req_turnover_h1:.2f}x, >=${min_ticket_5m_req:.0f}/tx",
             detail=flow_detail,
         )
     )
@@ -522,7 +569,9 @@ def evaluate_anti_top(
         )
     )
 
-    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.4: Blokir entry telat +1000%-5000%, kecualikan Revival Koridor A <= $92K!)
+    # 8. Pre-ATH & Anti-Late-Parabolic Extension Guard (v5.5: Tutup celah +1000% dari lahir Pump.fun pada usia 20–59m & >=60m!)
+    # Ingat: +420% dari migrasi PumpSwap ($30K) berarti koin sudah $156K (~31x / +3,000% dari lahir $5K di Pump.fun!).
+    # Hanya Mega-Viral ($Zero), Corridor D Viral Base, atau Revival Koridor A (<= $92K seperti Zhaki) yang dikecualikan.
     is_extreme_parabolic_late = (not is_daily_coin) and (
         p_h24 >= 2_000.0
         or p_h6 >= 1_200.0
@@ -530,9 +579,14 @@ def evaluate_anti_top(
     )
     is_intraday_late_non_base = (
         (not is_daily_coin)
-        and age_minutes >= 60.0
         and (not corridor_d_qualified)
-        and (p_h24 >= 850.0 or p_h6 >= 600.0)
+        and (not is_mega_viral_flow)
+        and (not is_corridor_a_revival)
+        and (
+            (spot_mc >= 135_000.0 and (p_h1 >= 420.0 or p_h6 >= 420.0 or p_h24 >= 420.0))
+            or (age_minutes >= 45.0 and (p_h24 >= 550.0 or p_h6 >= 480.0))
+            or (p_h24 >= 850.0 or p_h6 >= 600.0)
+        )
     )
     is_near_local_ath = age_minutes >= 360.0 and (p_h6 > 160.0 or p_h24 > 260.0)
     late_ath_hard_veto = is_extreme_parabolic_late or is_intraday_late_non_base
@@ -541,16 +595,16 @@ def evaluate_anti_top(
         GateCheck(
             id="pre_ath_extension",
             layer="ANTI_TOP",
-            label="Anti-Late-ATH & Pre-ATH Extension Guard (Bukan Setelah +1000%–5000%)",
+            label="Anti-Late-ATH & Pre-ATH Extension Guard (Anti +1000% dari Lahir)",
             passed=pre_ath_ok,
             severity="PASS" if pre_ath_ok else ("VETO" if late_ath_hard_veto else "WAIT_DIP"),
             actual=f"1h {p_h1:+.0f}% · 6h {p_h6:+.0f}% · 24h {p_h24:+.0f}% (usia {age_minutes / 60.0:.1f}j)",
-            threshold="Intraday < +850% 24h (ekstrem < +2000%) · Koin >=6j: 6h <= +160% & 24h <= +260%",
+            threshold="MC>=$135K: < +420% pasca-migrasi (kecuali Mega-Viral) · Koin >=6j: 6h<=+160% & 24h<=+260%",
             detail=(
                 "Masih di fase awal/sebelum zona puncak ekstrem — ruang kenaikan masih lebar."
                 if pre_ath_ok
                 else (
-                    f"DITOLAK (Terlalu Telat / Post-Parabolic ATH): Koin sudah melesat terlalu jauh (1h {p_h1:+.0f}%, 6h {p_h6:+.0f}%, 24h {p_h24:+.0f}%) — bukan lagi fase awal!"
+                    f"DITOLAK (Terlalu Telat / ATH Pasca-Lahir): Koin sudah melesat terlalu jauh pasca-migrasi (MC ${spot_mc:,.0f}, 1h {p_h1:+.0f}%, 6h {p_h6:+.0f}%, 24h {p_h24:+.0f}%) — rawan langsung dump!"
                     if late_ath_hard_veto
                     else "Koin tua sudah naik terlalu tinggi dalam 6–24 jam terakhir (dekat ATH lokal) — tunggu base konsolidasi baru."
                 )

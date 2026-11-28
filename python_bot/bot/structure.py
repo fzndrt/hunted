@@ -187,9 +187,9 @@ def _evaluate_intraday_ohlcv(
     max_recent_wick_pct = (max(meaningful_wicks) * 100.0) if meaningful_wicks else 0.0
     max_red_wick_pct = (max(meaningful_red_wicks) * 100.0) if meaningful_red_wicks else 0.0
 
-    # Viral Green Absorption (v5.2): candle terbaru & sebelumnya WAJIB HIJAU beruntun (bukan pantulan pasca dump merah!),
+    # Viral Green Absorption (v5.5): candle terbaru & sebelumnya WAJIB HIJAU beruntun (bukan pantulan pasca dump merah!),
     # low candle terbaru tidak jebol low sebelumnya, bukan Shooting Star ekstrem (wick < 60% & W/B < 4.5x),
-    # Higher-Low utuh, GreenVol >= 62%, Vol5m >= $25K, buyer dominan
+    # Higher-Low utuh, GreenVol 6-bar >= 62% ATAU 4-bar terbaru >= 75% (menangkap reclaim 4 candle hijau seperti WLFI #09!).
     is_viral_green_absorption = (
         higher_low_intact
         and (not support_broken)
@@ -198,7 +198,7 @@ def _evaluate_intraday_ohlcv(
         and (latest_l >= prev_l * 0.99)
         and (latest_upper_wick_pct < 60.0)
         and (latest_wick_to_body < 4.5)
-        and (green_vol_share_pct >= 62.0)
+        and (green_vol_share_pct >= 62.0 or green_vol_last4_pct >= 75.0)
         and (pair.vol_m5 >= 25_000.0)
         and (anti_top.buy_ratio_5m_pct >= 52.0)
         and (anti_top.buy_ratio_1h_pct >= 52.0)
@@ -319,6 +319,35 @@ def _evaluate_intraday_ohlcv(
     run_from_low_5m_pct = (
         ((latest_c - window_body_low_5m) / window_body_low_5m * 100.0) if window_body_low_5m > 0 else 0.0
     )
+    # v5.5 Anti-ATH Vertical Chasing di MC >= $140K:
+    # Jika MC sudah >= $140K, harga melesat vertikal >= +280% dari dasar 5m dan sedang menempel puncak ATH (DD < 10%)
+    # TANPA pernah membentuk base pullback sehat (>= -15% close-to-peak sebelum breakout) dan BUKAN Mega-Viral Institusional ($Zero),
+    # maka tolak kejar puncak -> tunggu pullback sehat -12% s/d -35% lalu reclaim!
+    running_peak = 0.0
+    max_prior_close_dd_pct = 0.0
+    for c in candles_5m[:-1]:
+        if c[2] > running_peak:
+            running_peak = c[2]
+        if running_peak > 0:
+            c_dd = max(0.0, (running_peak - c[4]) / running_peak * 100.0)
+            if c_dd > max_prior_close_dd_pct:
+                max_prior_close_dd_pct = c_dd
+    had_prior_pullback_base = max_prior_close_dd_pct >= 15.0 and clean_expanding_breakout
+    is_mega_viral_institutional = (
+        anti_top.is_viral_velocity
+        and pair.vol_m5 >= 45_000.0
+        and pair.vol_h1 >= 350_000.0
+        and anti_top.avg_ticket_5m_usd >= 65.0
+        and pair.pool_count >= 3
+    )
+    chasing_high_mc_ath_veto = (
+        pair.market_cap >= 140_000.0
+        and drawdown_from_peak_pct < 10.0
+        and run_from_low_5m_pct >= 280.0
+        and (not had_prior_pullback_base)
+        and (not is_mega_viral_institutional)
+    )
+
     is_small_mc_revival_base = pair.market_cap <= 92_000.0 and anti_top.p_h24 <= 250.0
     late_ath_run_veto = (
         drawdown_from_peak_pct <= 12.0
@@ -332,6 +361,7 @@ def _evaluate_intraday_ohlcv(
     vol_exhaustion_top = (
         weak_double_top_ath
         or late_ath_run_veto
+        or chasing_high_mc_ath_veto
         or (
             anti_top.p_h1 >= 65.0
             and drawdown_from_peak_pct <= 15.0
@@ -348,6 +378,10 @@ def _evaluate_intraday_ohlcv(
     elif late_ath_run_veto:
         exhaust_detail = (
             f"DITOLAK (Late-ATH Run): Harga sudah melesat +{run_from_low_5m_pct:.0f}% dari dasar 5m dan sedang menempel ATH (DD -{drawdown_from_peak_pct:.1f}%) — terlalu telat, bukan entry awal."
+        )
+    elif chasing_high_mc_ath_veto:
+        exhaust_detail = (
+            f"DITOLAK (Anti-ATH Chasing MC >= $140K): Harga melesat vertikal +{run_from_low_5m_pct:.0f}% tanpa base pullback & menempel puncak ATH (DD -{drawdown_from_peak_pct:.1f}%) — tunggu pullback sehat lalu reclaim."
         )
     elif vol_exhaustion_top:
         exhaust_detail = (

@@ -423,7 +423,8 @@ export function evaluateSecurityLayer(
 
   const spotMcVal = asNum(pair.marketCap) || asNum(pair.fdv);
   const mcPerHolderUsd = totalHolders > 0 && spotMcVal > 0 ? Number((spotMcVal / totalHolders).toFixed(1)) : 0;
-  const maxMcPerHolder = spotMcVal >= 210_000 ? 280 : 320;
+  const isDailyToken = ageMin >= 20 * 60;
+  const maxMcPerHolder = isDailyToken ? 280 : spotMcVal >= 110_000 ? 240 : 260;
   const holderDensityOk = totalHolders === 0 || mcPerHolderUsd <= maxMcPerHolder;
 
   const toxicRisks = Array.isArray(rug.risks)

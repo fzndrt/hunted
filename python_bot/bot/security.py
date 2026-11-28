@@ -286,25 +286,29 @@ def evaluate_security(
         age_min = 60.0
     holders_per_min = round(total_holders / age_min, 2) if total_holders > 0 else 0.0
 
-    # 8. Minimum Organic Holder Depth & Holder Density Ratio (v5: Anti-Hollow-Shell MC/Holder!)
+    # 8. Minimum Organic Holder Depth & Holder Density Ratio (v5.5: Anti-Hollow-Shell & Anti-Thin-PvP MC/Holder!)
+    is_daily_token = age_min >= 20.0 * 60.0
     if pair.market_cap >= 390_000.0:
         min_holders_req = 1_800
-        max_mc_per_holder = 280.0
+        max_mc_per_holder = 280.0 if is_daily_token else 240.0
     elif pair.market_cap >= 210_000.0:
         min_holders_req = 600
-        max_mc_per_holder = 280.0
+        max_mc_per_holder = 280.0 if is_daily_token else 240.0
     elif require_hyper_viral_holders:
-        min_holders_req = 750
-        max_mc_per_holder = 300.0
+        min_holders_req = 400 if pair.market_cap <= 88_000.0 else 500
+        max_mc_per_holder = 240.0
     elif require_steady_climber_holders:
         min_holders_req = 450
-        max_mc_per_holder = 300.0
+        max_mc_per_holder = 280.0 if is_daily_token else 250.0
+    elif pair.market_cap >= 110_000.0:
+        min_holders_req = 350
+        max_mc_per_holder = 280.0 if is_daily_token else 240.0
     elif pair.market_cap >= 92_000.0:
         min_holders_req = 350
-        max_mc_per_holder = 320.0
+        max_mc_per_holder = 280.0 if is_daily_token else 260.0
     else:
         min_holders_req = 250
-        max_mc_per_holder = 320.0
+        max_mc_per_holder = 280.0 if is_daily_token else 260.0
 
     mc_per_holder_usd = (
         round(pair.market_cap / total_holders, 1)
@@ -359,7 +363,10 @@ def evaluate_security(
     )
 
     fasttrack_clean_ok = (not require_hyper_viral_holders) or (
-        total_holders >= 500 and warn_or_danger_risks_early == 0 and dev_pct <= 0.05
+        total_holders >= min_holders_req
+        and warn_or_danger_risks_early == 0
+        and dev_pct <= 0.05
+        and (rc_score is None or rc_score <= 5)
     )
     holders_ok = (
         ((total_holders == 0) and not require_hyper_viral_holders)
@@ -378,7 +385,7 @@ def evaluate_security(
                 else "N/A"
             ),
             threshold=(
-                f">= 500H, <= ${max_mc_per_holder:.0f}/H & 0 risks (Early Fast-Track 6-9m)"
+                f">= {min_holders_req:,}H, <= ${max_mc_per_holder:.0f}/H, RC<=5 & 0 risks (Early Fast-Track 6-9m)"
                 if require_hyper_viral_holders
                 else f">= {min_holders_req:,}H & <= ${max_mc_per_holder:.0f} MC/holder"
             ),
@@ -386,7 +393,7 @@ def evaluate_security(
                 f"Basis komunitas holder padat ({total_holders:,} dompet, ${mc_per_holder_usd:,.0f}/holder, {holders_per_min:.1f}/m)."
                 if holders_ok
                 else (
-                    f"DITOLAK (Early Fast-Track < 10m): Wajib >= 500H, <= $300/H & 0 risks (aktual {total_holders:,}H, ${mc_per_holder_usd:,.0f}/H, {warn_or_danger_risks_early} risk)."
+                    f"DITOLAK (Early Fast-Track < 10m): Wajib >= {min_holders_req:,}H, <= ${max_mc_per_holder:.0f}/H, RC<=5 & 0 risks (aktual {total_holders:,}H, ${mc_per_holder_usd:,.0f}/H, RC={rc_score}, {warn_or_danger_risks_early} risk)."
                     if require_hyper_viral_holders
                     else (
                         f"DITOLAK (Hollow Shell / Gelembung Cabal): MC/Holder terlalu mahal (${mc_per_holder_usd:,.0f}/holder > ${max_mc_per_holder:.0f}) — rawan terjun bebas saat cabal jual."
